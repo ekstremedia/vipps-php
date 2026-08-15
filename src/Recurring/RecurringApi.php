@@ -177,9 +177,11 @@ final readonly class RecurringApi
     }
 
     /**
-     * The by-id fast path (GET /charges/{id}): no agreement id needed, and
-     * Vipps grants it higher rate limits than the per-agreement route —
-     * prefer it in webhook handlers and polling loops.
+     * The by-id route (GET /charges/{id}): for investigations where the
+     * agreement id is unknown — e.g. a customer inquiry quoting only a
+     * charge id. Vipps documents it as explicitly NOT a replacement for the
+     * per-agreement endpoint, so when the agreement id is at hand (webhook
+     * handlers, polling loops) use getCharge() instead.
      */
     public function getChargeById(string $chargeId): Charge
     {

@@ -8,6 +8,7 @@ use Nesthus\Vipps\Epayment\CreatePayment;
 use Nesthus\Vipps\Epayment\EpaymentApi;
 use Nesthus\Vipps\Epayment\PaymentState;
 use Nesthus\Vipps\Exceptions\VippsApiException;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 use Nesthus\Vipps\Http\ApiTransport;
 use Nesthus\Vipps\Tests\Support\FakeHttpClient;
 use Nesthus\Vipps\VippsConfig;
@@ -55,6 +56,17 @@ it('maps a created payment without a redirectUrl (push flow) to null', function 
 
     expect($created->redirectUrl)->toBeNull();
 });
+
+it('refuses a created payment without a reference — the payment could never be addressed again', function (array $body) {
+    $this->http->queueJson(201, $body);
+
+    expect(fn() => $this->api->createPayment($this->draft, 'idem-create-3'))
+        ->toThrow(VippsMalformedResponseException::class, 'reference');
+})->with([
+    'reference absent' => [['redirectUrl' => 'https://landing.vipps.no?token=abc']],
+    'reference not a string' => [['reference' => 42]],
+    'reference empty' => [['reference' => '']],
+]);
 
 it('gets a payment: GET /payments/{reference} without an Idempotency-Key', function () {
     $this->http->queueJson(200, [
@@ -118,9 +130,18 @@ it('returns an empty trail for an empty response body', function () {
 });
 
 it('captures: POST /payments/{reference}/capture with modificationAmount and the caller\'s Idempotency-Key', function () {
-    $this->http->queueJson(200, ['state' => 'AUTHORIZED']);
+    // The adjustment response IS the verification Vipps tells merchants to
+    // do before shipping — so it must come back typed, aggregates included.
+    $this->http->queueJson(200, [
+        'reference' => 'order-2026-000123',
+        'state' => 'AUTHORIZED',
+        'aggregate' => [
+            'authorizedAmount' => ['currency' => 'NOK', 'value' => 4900],
+            'capturedAmount' => ['currency' => 'NOK', 'value' => 2000],
+        ],
+    ]);
 
-    $this->api->capture('order-2026-000123', Amount::fromMajor(20), 'idem-capture-1');
+    $payment = $this->api->capture('order-2026-000123', Amount::fromMajor(20), 'idem-capture-1');
 
     $request = $this->http->lastRequest();
     expect($request->getMethod())->toBe('POST')
@@ -128,25 +149,38 @@ it('captures: POST /payments/{reference}/capture with modificationAmount and the
         ->and($request->getHeaderLine('Idempotency-Key'))->toBe('idem-capture-1')
         ->and(json_decode((string) $request->getBody(), true))->toBe([
             'modificationAmount' => ['currency' => 'NOK', 'value' => 2000],
-        ]);
+        ])
+        ->and($payment->state)->toBe(PaymentState::Authorized)
+        ->and($payment->capturedAmount?->minorUnits)->toBe(2000)
+        ->and($payment->authorizedAmount?->minorUnits)->toBe(4900);
 });
 
 it('cancels: POST /payments/{reference}/cancel with no body but the caller\'s Idempotency-Key', function () {
-    $this->http->queueJson(200, ['state' => 'TERMINATED']);
+    $this->http->queueJson(200, [
+        'reference' => 'order-2026-000123',
+        'state' => 'TERMINATED',
+        'aggregate' => ['cancelledAmount' => ['currency' => 'NOK', 'value' => 4900]],
+    ]);
 
-    $this->api->cancel('order-2026-000123', 'idem-cancel-1');
+    $payment = $this->api->cancel('order-2026-000123', 'idem-cancel-1');
 
     $request = $this->http->lastRequest();
     expect($request->getMethod())->toBe('POST')
         ->and((string) $request->getUri())->toBe('https://apitest.vipps.no/epayment/v1/payments/order-2026-000123/cancel')
         ->and($request->getHeaderLine('Idempotency-Key'))->toBe('idem-cancel-1')
-        ->and((string) $request->getBody())->toBe('');
+        ->and((string) $request->getBody())->toBe('')
+        ->and($payment->state)->toBe(PaymentState::Terminated)
+        ->and($payment->cancelledAmount?->minorUnits)->toBe(4900);
 });
 
 it('refunds: POST /payments/{reference}/refund with modificationAmount and the caller\'s Idempotency-Key', function () {
-    $this->http->queueJson(200, ['state' => 'AUTHORIZED']);
+    $this->http->queueJson(200, [
+        'reference' => 'order-2026-000123',
+        'state' => 'AUTHORIZED',
+        'aggregate' => ['refundedAmount' => ['currency' => 'NOK', 'value' => 500]],
+    ]);
 
-    $this->api->refund('order-2026-000123', Amount::fromMinor(500), 'idem-refund-1');
+    $payment = $this->api->refund('order-2026-000123', Amount::fromMinor(500), 'idem-refund-1');
 
     $request = $this->http->lastRequest();
     expect($request->getMethod())->toBe('POST')
@@ -154,7 +188,8 @@ it('refunds: POST /payments/{reference}/refund with modificationAmount and the c
         ->and($request->getHeaderLine('Idempotency-Key'))->toBe('idem-refund-1')
         ->and(json_decode((string) $request->getBody(), true))->toBe([
             'modificationAmount' => ['currency' => 'NOK', 'value' => 500],
-        ]);
+        ])
+        ->and($payment->refundedAmount?->minorUnits)->toBe(500);
 });
 
 it('surfaces the 409 for a reused reference as a VippsApiException', function () {

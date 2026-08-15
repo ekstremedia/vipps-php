@@ -46,15 +46,27 @@ it('serialises every user flow to its wire value', function (UserFlow $flow, str
         reference: 'order-2026-000125',
         returnUrl: 'https://shop.example/return',
         userFlow: $flow,
+        customerPhoneNumber: '4712345678', // PUSH_MESSAGE requires one; harmless for the rest
     );
 
     expect($payment->toPayload()['userFlow'])->toBe($wire);
 })->with([
     'web redirect' => [UserFlow::WebRedirect, 'WEB_REDIRECT'],
-    'native' => [UserFlow::Native, 'NATIVE'],
+    // NATIVE_REDIRECT, not the NATIVE that 0.1.0 shipped — the API rejects
+    // NATIVE with a validation error (see the ePayment create-payment spec).
+    'native redirect' => [UserFlow::NativeRedirect, 'NATIVE_REDIRECT'],
     'push message' => [UserFlow::PushMessage, 'PUSH_MESSAGE'],
     'qr' => [UserFlow::Qr, 'QR'],
 ]);
+
+it('rejects PUSH_MESSAGE without a customerPhoneNumber — the push has nowhere to go', function () {
+    new CreatePayment(
+        amount: Amount::fromMinor(100),
+        reference: 'order-2026-000127',
+        returnUrl: 'https://shop.example/return',
+        userFlow: UserFlow::PushMessage,
+    );
+})->throws(VippsConfigException::class, 'customerPhoneNumber is required');
 
 it('rejects an out-of-spec reference', function (string $reference) {
     new CreatePayment(

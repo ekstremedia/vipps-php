@@ -5,15 +5,17 @@ declare(strict_types=1);
 namespace Nesthus\Vipps\Recurring;
 
 use Nesthus\Vipps\Amount;
+use Nesthus\Vipps\Exceptions\VippsConfigException;
 use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 
 /**
- * An agreement's pricing model. Constructed through legacy()/variable() on
- * the request side — the private constructor is what guarantees a LEGACY
- * pricing always carries its amount and a VARIABLE one its ceiling, so
- * toPayload() can never emit a half-built model. maxAmount is response-only:
- * the ceiling the customer actually approved (they may adjust the merchant's
- * suggestedMaxAmount), so it is never sent back out.
+ * An agreement's pricing model. Constructed through legacy()/variable()/
+ * flexible() on the request side — the private constructor is what
+ * guarantees a LEGACY pricing always carries its amount, a VARIABLE one its
+ * ceiling, and a FLEXIBLE one neither, so toPayload() can never emit a
+ * half-built model. maxAmount is response-only: the ceiling the customer
+ * actually approved (they may adjust the merchant's suggestedMaxAmount), so
+ * it is never sent back out.
  */
 final readonly class Pricing
 {
@@ -43,6 +45,22 @@ final readonly class Pricing
     }
 
     /**
+     * No amount, no ceiling — deliberately. A FLEXIBLE agreement's request
+     * payload is `{type, currency}` and nothing else (per the v3 spec): the
+     * user approves no price up front, so every charge under it carries its
+     * own amount. Takes a bare currency string because there is no Amount to
+     * borrow one from; validated with Amount's own ISO 4217 rule.
+     */
+    public static function flexible(string $currency): self
+    {
+        if (preg_match('/^[A-Z]{3}$/', $currency) !== 1) {
+            throw new VippsConfigException("Currency must be a three-letter ISO 4217 code, got \"{$currency}\".");
+        }
+
+        return new self(PricingType::Flexible, $currency);
+    }
+
+    /**
      * A missing type still reads as LEGACY (the documented default), but an
      * unknown one is refused rather than relabelled: reporting a FLEXIBLE or
      * future agreement as LEGACY tells the merchant the user approved a
@@ -53,7 +71,7 @@ final readonly class Pricing
     public static function fromArray(array $data): self
     {
         $type = ResponseField::stringOrNull($data, 'type');
-        $currency = ResponseField::currency($data);
+        $currency = ResponseField::currency($data, 'recurring agreement', 'pricing.currency');
         $amount = ResponseField::intOrNull($data, 'amount');
         $suggestedMaxAmount = ResponseField::intOrNull($data, 'suggestedMaxAmount');
         $maxAmount = ResponseField::intOrNull($data, 'maxAmount');

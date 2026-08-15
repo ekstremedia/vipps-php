@@ -221,6 +221,29 @@ it('maps summary.refunded so a double-refund guard can trust it', function () {
         ->and($charge->summary->refunded->equals(Amount::fromMinor(19900)))->toBeTrue();
 });
 
+it('throws when a charge response is missing its amount instead of reading it as zero', function () {
+    // Amount::fromMinor(0) is a perfectly valid money value — which is
+    // exactly the problem: a caller would capture or refund zero minor units
+    // with no error anywhere.
+    $h = new RecurringHarness();
+    $body = recurringChargeBody('chr_1');
+    unset($body['amount']);
+    $h->http->queueJson(200, $body);
+
+    expect(fn() => $h->api->getChargeById('chr_1'))
+        ->toThrow(VippsMalformedResponseException::class, 'amount');
+});
+
+it('throws when a charge response carries a malformed currency instead of relabelling it NOK', function () {
+    $h = new RecurringHarness();
+    $body = recurringChargeBody('chr_1');
+    $body['currency'] = 'kroner';
+    $h->http->queueJson(200, $body);
+
+    expect(fn() => $h->api->getChargeById('chr_1'))
+        ->toThrow(VippsMalformedResponseException::class, 'currency');
+});
+
 it('throws when a charge response has no summary object', function () {
     $h = new RecurringHarness();
     $body = recurringChargeBody('chr_1');

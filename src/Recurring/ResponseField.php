@@ -6,6 +6,7 @@ namespace Nesthus\Vipps\Recurring;
 
 use DateTimeImmutable;
 use Exception;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 
 /**
  * Narrowing helpers for reading Vipps response arrays, so the tolerance
@@ -66,17 +67,27 @@ final readonly class ResponseField
     }
 
     /**
-     * Falls back to NOK when the currency is missing or malformed, so
-     * Amount's own ISO 4217 validation can never throw while merely READING
-     * a response — that guard exists to catch merchant mistakes on the way
-     * out, not Vipps quirks on the way in.
+     * The one field the tolerance policy does NOT apply to: currency labels
+     * every Amount built from the response, so guessing it would relabel
+     * money — an invalid "SEK" silently becoming a valid-looking NOK amount
+     * is worse than any exception. Absent or wrong-typed reads as missing;
+     * a string that is not a three-letter ISO 4217 code is refused as-is.
      *
      * @param array<mixed> $data
+     * @param string $field how the field is named in the exception (e.g. "pricing.currency" when $data is a nested object)
      */
-    public static function currency(array $data): string
+    public static function currency(array $data, string $context, string $field = 'currency'): string
     {
         $value = $data['currency'] ?? null;
 
-        return is_string($value) && preg_match('/^[A-Z]{3}$/', $value) === 1 ? $value : 'NOK';
+        if (! is_string($value) || $value === '') {
+            throw VippsMalformedResponseException::missingField($context, $field);
+        }
+
+        if (preg_match('/^[A-Z]{3}$/', $value) !== 1) {
+            throw VippsMalformedResponseException::unexpectedValue($context, $field, $value);
+        }
+
+        return $value;
     }
 }

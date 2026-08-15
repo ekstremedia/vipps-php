@@ -26,4 +26,14 @@ final class VippsMalformedResponseException extends RuntimeException implements 
     {
         return new self("Vipps response for {$context} carries unknown {$field} \"{$value}\" — SDK update likely needed.");
     }
+
+    /**
+     * The body itself deliberately stays out of the message: a non-JSON 2xx
+     * is usually an intermediary's error page, which can carry internal
+     * hostnames or markup that must not end up in exception logs.
+     */
+    public static function invalidJson(string $context): self
+    {
+        return new self("Vipps response for {$context} is not valid JSON despite the 2xx status.");
+    }
 }

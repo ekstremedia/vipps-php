@@ -76,29 +76,54 @@ final readonly class EpaymentApi
         return $events;
     }
 
-    public function capture(string $reference, Amount $amount, string $idempotencyKey): void
+    /**
+     * Returns the payment as the adjustment response reports it — Vipps
+     * explicitly tells merchants to verify the capture response (its
+     * aggregate amounts, not the state) before shipping goods, so throwing
+     * the body away and returning void forced an extra getPayment() round
+     * trip exactly where correctness matters most.
+     */
+    public function capture(string $reference, Amount $amount, string $idempotencyKey): Payment
     {
-        $this->transport->request(
-            'POST',
-            $this->path($reference) . '/capture',
-            ['modificationAmount' => AmountShape::toArray($amount)],
-            idempotencyKey: $idempotencyKey,
-        );
+        return $this->adjust($reference, 'capture', ['modificationAmount' => AmountShape::toArray($amount)], $idempotencyKey);
     }
 
-    public function cancel(string $reference, string $idempotencyKey): void
+    /**
+     * @see capture() for why this returns the adjustment response
+     */
+    public function cancel(string $reference, string $idempotencyKey): Payment
     {
-        $this->transport->request('POST', $this->path($reference) . '/cancel', idempotencyKey: $idempotencyKey);
+        return $this->adjust($reference, 'cancel', null, $idempotencyKey);
     }
 
-    public function refund(string $reference, Amount $amount, string $idempotencyKey): void
+    /**
+     * @see capture() for why this returns the adjustment response
+     */
+    public function refund(string $reference, Amount $amount, string $idempotencyKey): Payment
     {
-        $this->transport->request(
+        return $this->adjust($reference, 'refund', ['modificationAmount' => AmountShape::toArray($amount)], $idempotencyKey);
+    }
+
+    /**
+     * The three lifecycle mutations share one wire shape: POST with an
+     * optional modificationAmount body, answered by the adjusted payment
+     * (reference, state, aggregate) — the same fields Payment maps for GET.
+     *
+     * @param array<string, mixed>|null $body
+     */
+    private function adjust(string $reference, string $action, ?array $body, string $idempotencyKey): Payment
+    {
+        $response = $this->transport->request(
             'POST',
-            $this->path($reference) . '/refund',
-            ['modificationAmount' => AmountShape::toArray($amount)],
+            $this->path($reference) . '/' . $action,
+            $body,
             idempotencyKey: $idempotencyKey,
         );
+
+        /** @var array<string, mixed> $data */
+        $data = $response->data;
+
+        return Payment::fromArray($data);
     }
 
     private function path(string $reference): string

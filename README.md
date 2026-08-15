@@ -20,7 +20,7 @@ Unofficial framework-agnostic PHP SDK for Vipps MobilePay: ePayment, Recurring, 
 - **PHP 8.3+**, `final readonly` DTOs, native enums, `declare(strict_types=1)`
   throughout.
 - **No serializer, no annotations, no framework** — the only runtime
-  dependencies are PSR interfaces.
+  dependencies are PSR interfaces (plus the `mbstring` extension).
 - **No floats for money.** Amounts are an `Amount` value object over integer
   minor units (øre/cents); float constructors don't exist.
 - **Caller-owned idempotency keys.** Every mutating call *requires* one from
@@ -149,11 +149,19 @@ Also available: `listAgreements()` (status filter plus optional
 `pageNumber`/`pageSize`), `updateAgreement()` (price/text changes),
 `stopAgreement()` (final — a stopped agreement can never be reactivated),
 `listCharges()` (returns a `ChargePage`; feed its `continuationToken` back in
-to page), `getCharge()`, `getChargeById()` (higher rate limits; prefer it in
-webhook handlers), `cancelCharge()`, `captureCharge()` (for `RESERVE_CAPTURE`
+to page), `getCharge()` (use this in webhook and polling flows whenever you
+have the agreement id), `getChargeById()` (lookup by charge id alone —
+Vipps intends it for investigating customer claims, not for automation),
+`cancelCharge()`, `captureCharge()` (for `RESERVE_CAPTURE`
 charges — v3 requires an explicit amount even for a full capture) and
 `refundCharge()`. Charge money totals (captured/refunded/cancelled) live on
 `Charge->summary`.
+
+Pricing models: `Pricing::legacy()` (fixed price per charge),
+`Pricing::variable()` (user-approved ceiling) and `Pricing::flexible()`
+(currency only — no price approved up front, every charge carries its own
+amount; `interval:` may then be `null`, since a flexible agreement has no
+fixed cadence).
 
 ## ePayment quick start
 
@@ -179,7 +187,11 @@ $payment = $vipps->epayment()->getPayment('order-2026-000123');
 if ($payment->state === PaymentState::Authorized) {
     // Capture when you deliver — in full or in parts (ship half, capture half).
     // An authorization nobody captures expires on its own; cancel() releases it early.
-    $vipps->epayment()->capture('order-2026-000123', Amount::fromMajor(249, 50), $captureKey);
+    $result = $vipps->epayment()->capture('order-2026-000123', Amount::fromMajor(249, 50), $captureKey);
+
+    // capture()/cancel()/refund() return the adjusted payment. Vipps says to
+    // verify the capture response before shipping — read the aggregates:
+    $result->capturedAmount?->minorUnits;   // 24950 when the full capture landed
 }
 
 // Money already captured goes back with refund():
@@ -234,6 +246,16 @@ $profile = $vipps->login()->userinfo($tokens->accessToken()); // authorized by t
 > service — **must not** be trusted this way; it could be forged freely. Full
 > JWKS signature verification is a deliberate non-goal of v0.1; if you need to
 > accept tokens from untrusted channels, bring a real JWT library.
+>
+> The **claims are not validated either** — the SDK performs no OIDC claim
+> checks, so treat them as unvalidated input. If you sent a `nonce` in the
+> `AuthorizationRequest`, compare the token's `nonce` claim against the value
+> in your session before accepting the login (that binding is what stops a
+> token minted for one session being replayed into another — the SDK has no
+> session, so it cannot do this for you). If your acceptance logic reads
+> `iss`, `aud`, `exp`, `iat` or `azp`, validate them per the
+> [OIDC spec, §3.1.3.7](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation)
+> before using the claims as identity data.
 
 ## Webhooks
 

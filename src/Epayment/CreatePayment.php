@@ -40,6 +40,13 @@ final readonly class CreatePayment
         if ($customerPhoneNumber !== null && preg_match('/^\d{8,15}$/', $customerPhoneNumber) !== 1) {
             throw new VippsConfigException('customerPhoneNumber must be an MSISDN without the plus sign, e.g. "4791234567".');
         }
+
+        // PUSH_MESSAGE has no browser hop: the phone number is the only way
+        // Vipps can reach the customer, and the API requires `customer` for
+        // this flow. Rejecting the combination here beats a 400 in production.
+        if ($userFlow === UserFlow::PushMessage && $customerPhoneNumber === null) {
+            throw new VippsConfigException('customerPhoneNumber is required for UserFlow::PushMessage — the push has nowhere to go without it.');
+        }
     }
 
     /**

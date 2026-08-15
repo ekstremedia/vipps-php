@@ -55,7 +55,7 @@ final readonly class VippsConfig
         }
 
         if ($baseUrlOverride !== null && ! self::isAbsoluteHttpUrl($baseUrlOverride)) {
-            throw new VippsConfigException('baseUrlOverride must be an absolute http(s) URL.');
+            throw new VippsConfigException('baseUrlOverride must be an absolute http(s) URL with no userinfo, query or fragment.');
         }
 
         $this->clientSecret = new SensitiveParameterValue($clientSecret);
@@ -106,6 +106,15 @@ final readonly class VippsConfig
      * A real parse, not str_starts_with('http') — that prefix check accepted
      * "httpfoo://…" and even a bare "http". An override must carry an
      * http/https scheme AND a host to be a URL a PSR-17 factory can hit.
+     *
+     * Userinfo, query and fragment are rejected outright: ApiTransport
+     * appends API paths to this value verbatim, so a query or fragment would
+     * displace every path onto the wrong endpoint, and credentials embedded
+     * as userinfo would leak through __debugInfo(), which prints
+     * baseUrlOverride unredacted. A path prefix (reverse proxy, mock server
+     * under a subpath) stays allowed. Each component is checked separately —
+     * isset($a, $b) is true only when ALL are set, which would wave through
+     * a URL carrying just one of them.
      */
     private static function isAbsoluteHttpUrl(string $url): bool
     {
@@ -114,6 +123,10 @@ final readonly class VippsConfig
         return is_array($parts)
             && isset($parts['scheme'], $parts['host'])
             && $parts['host'] !== ''
+            && ! isset($parts['user'])
+            && ! isset($parts['pass'])
+            && ! isset($parts['query'])
+            && ! isset($parts['fragment'])
             && in_array(strtolower($parts['scheme']), ['http', 'https'], true);
     }
 }

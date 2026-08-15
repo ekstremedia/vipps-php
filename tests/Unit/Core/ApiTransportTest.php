@@ -5,6 +5,7 @@ declare(strict_types=1);
 use GuzzleHttp\Psr7\HttpFactory;
 use Nesthus\Vipps\Exceptions\VippsApiException;
 use Nesthus\Vipps\Exceptions\VippsConfigException;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 use Nesthus\Vipps\Http\ApiTransport;
 use Nesthus\Vipps\SystemInfo;
 use Nesthus\Vipps\Tests\Support\FakeHttpClient;
@@ -136,14 +137,51 @@ describe('response handling', function () {
         expect($this->transport->request('DELETE', '/x')->data)->toBe([]);
     });
 
-    it('treats a 2xx non-JSON body as empty data instead of a decode fatal', function () {
-        $this->client->queueRaw(200, 'OK, but not JSON');
+    it('throws VippsMalformedResponseException for a 2xx body that is not JSON, without quoting the body', function () {
+        // An earlier revision mapped this to empty data; that only deferred
+        // the contract violation to a confusing missing-field error later.
+        $this->client->queueRaw(200, '<html>proxy error page: secret backend hostname</html>');
 
-        expect($this->transport->request('GET', '/x')->data)->toBe([]);
+        try {
+            $this->transport->request('GET', '/x');
+            $this->fail('Expected VippsMalformedResponseException was not thrown.');
+        } catch (VippsMalformedResponseException $e) {
+            expect($e->getMessage())->toContain('GET /x')
+                ->and($e->getMessage())->not->toContain('secret backend hostname');
+        }
     });
 });
 
 describe('error mapping', function () {
+    it('rejects a 3xx as VippsApiException — redirects are never followed, so they are failures', function (string $method) {
+        // No Vipps endpoint legitimately answers a redirect, and PSR-18
+        // clients are not required to follow one. Only >=400 used to throw,
+        // so a 302 sailed through as a "successful" ApiResponse whose data
+        // was a redirect page.
+        $this->client->queueRaw(302, '', ['Location' => 'https://elsewhere.example/']);
+
+        try {
+            match ($method) {
+                'request' => $this->transport->request('GET', '/x'),
+                'requestForm' => $this->transport->requestForm('POST', '/x', ['a' => 'b']),
+            };
+            $this->fail('Expected VippsApiException was not thrown.');
+        } catch (VippsApiException $e) {
+            expect($e->status)->toBe(302);
+        }
+    })->with(['request', 'requestForm']);
+
+    it('rejects a sub-200 status as VippsApiException', function () {
+        $this->client->queueRaw(199);
+
+        try {
+            $this->transport->request('GET', '/x');
+            $this->fail('Expected VippsApiException was not thrown.');
+        } catch (VippsApiException $e) {
+            expect($e->status)->toBe(199);
+        }
+    });
+
     it('maps a 4xx problem+json body to status, details and traceId', function () {
         $this->client->queueRaw(400, json_encode([
             'type' => 'https://vipps.example/errors/validation',

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nesthus\Vipps\Recurring;
 
 use Nesthus\Vipps\Exceptions\VippsConfigException;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 
 /**
  * The billing cadence: every $count $unit. Only the lower bound is validated
@@ -43,16 +44,32 @@ final readonly class Interval
     }
 
     /**
+     * Response mapping is strict where the constructor is lenient about
+     * provenance: a cadence Vipps reports that we cannot represent must not
+     * be silently relabelled "every month" — the merchant would schedule
+     * charges on the wrong rhythm without any error to notice.
+     *
      * @param array<mixed> $data
      */
     public static function fromArray(array $data): self
     {
         $unit = $data['unit'] ?? null;
+        if (! is_string($unit) || $unit === '') {
+            throw VippsMalformedResponseException::missingField('recurring agreement', 'interval.unit');
+        }
+
         $count = $data['count'] ?? null;
+        if (! is_int($count)) {
+            throw VippsMalformedResponseException::missingField('recurring agreement', 'interval.count');
+        }
+        if ($count < 1) {
+            throw VippsMalformedResponseException::unexpectedValue('recurring agreement', 'interval.count', (string) $count);
+        }
 
         return new self(
-            is_string($unit) ? (IntervalUnit::tryFrom($unit) ?? IntervalUnit::Month) : IntervalUnit::Month,
-            is_int($count) && $count >= 1 ? $count : 1,
+            IntervalUnit::tryFrom($unit)
+                ?? throw VippsMalformedResponseException::unexpectedValue('recurring agreement', 'interval.unit', $unit),
+            $count,
         );
     }
 

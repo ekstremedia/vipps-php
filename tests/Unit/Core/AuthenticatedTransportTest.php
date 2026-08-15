@@ -72,6 +72,20 @@ it('lets its own Bearer win over a caller-supplied Authorization header', functi
     expect($this->client->lastRequest()->getHeaderLine('Authorization'))->toBe('Bearer token-1');
 });
 
+it('lets its own Bearer win over a lowercase authorization header too', function () {
+    // A lowercase key survives the `+` merge as a DISTINCT array entry, and
+    // PSR-7's withHeader() replaces case-insensitively — so without an
+    // explicit case-insensitive strip, the caller's value would overwrite
+    // the Bearer after it was set.
+    $this->client
+        ->queueJson(200, ['access_token' => 'token-1', 'expires_in' => 3600])
+        ->queueJson(200);
+
+    $this->transport->request('GET', '/x', headers: ['authorization' => 'Basic xyz']);
+
+    expect($this->client->lastRequest()->getHeaderLine('Authorization'))->toBe('Bearer token-1');
+});
+
 it('forgets the cached token and retries exactly once on 401', function () {
     $this->client
         ->queueJson(200, ['access_token' => 'token-1', 'expires_in' => 3600])

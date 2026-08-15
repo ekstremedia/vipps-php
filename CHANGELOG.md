@@ -10,6 +10,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **ePayment (breaking)** — `capture()`, `cancel()` and `refund()` return the
+  adjusted `Payment` (reference, state, aggregate amounts) instead of `void`.
+  Vipps explicitly tells merchants to verify the capture response before
+  shipping; discarding the body forced an extra `getPayment()` round trip at
+  exactly that point.
+- **ePayment (breaking)** — `UserFlow::Native` is now
+  `UserFlow::NativeRedirect` with the wire value `NATIVE_REDIRECT`: the
+  ePayment API accepts `NATIVE_REDIRECT`, not the `NATIVE` 0.1.0 shipped, so
+  app-to-app payment creation always failed validation — nothing working can
+  break.
+- **Core (breaking)** — `ApiTransport` throws `VippsApiException` for every
+  non-2xx status, including 3xx: redirects are never followed (PSR-18 clients
+  are not required to), so a 3xx previously came back as a "successful"
+  `ApiResponse` carrying a redirect page.
+- **Core (breaking)** — a 2xx response whose non-empty body is not valid JSON
+  now throws `VippsMalformedResponseException` instead of mapping to empty
+  data, which only deferred the contract violation to a confusing
+  missing-field error later. Empty bodies (204s, bare-200 mutations) stay
+  valid. The body itself stays out of the message.
+- **Core (breaking)** — `Psr16TokenCache` normalizes storage keys to PSR-16's
+  64-character portable limit (the default prefix plus TokenProvider's sha256
+  suffix was 84, which strict stores may reject outright); a key that does
+  not fit keeps its prefix and gets the suffix re-hashed down to fit. Entries
+  under the old long keys are orphaned — tokens refetch on their own. Custom
+  prefixes longer than 44 characters are now rejected
+  (`VippsConfigException`).
+- **Core** — `composer.json` declares the `ext-mbstring` requirement
+  `SystemInfo` already had: without the extension, header generation died
+  with an undefined-function error instead of a clear install-time message.
+
 - **Core (breaking)** — `Psr16TokenCache`'s default key prefix changed from
   `nesthus-vipps:token:` to `nesthus-vipps.token.`: `:` is a RESERVED key
   character in PSR-16 (`{}()/\@:`), so strict stores (e.g. Symfony's
@@ -33,11 +63,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because v3 pages this endpoint through `Continuation-Token` headers.
 - **Recurring (breaking)** — `NewCharge` validates `due`/`retryDays` against
   the effective charge type: RECURRING (the default) requires both,
-  UNSCHEDULED forbids `due` and omits null fields from the payload —
-  previously an UNSCHEDULED charge was unrepresentable.
+  UNSCHEDULED forbids `due` and permits `retryDays` only omitted or `0` (the
+  spec's rule — there is no due date to retry after), and omits null fields
+  from the payload — previously an UNSCHEDULED charge was unrepresentable.
+  A `due` string must also be a real calendar date: `2026-02-30` used to
+  match the shape check and go on the wire.
+- **Recurring (breaking)** — `Agreement::$interval` and
+  `NewAgreement::$interval` are now nullable, for FLEXIBLE agreements only:
+  the v3 flexible model has no fixed cadence, so the field is optional there
+  (and enforced everywhere else — a null interval with LEGACY/VARIABLE
+  pricing throws `VippsConfigException`, a non-FLEXIBLE response without one
+  throws `VippsMalformedResponseException`).
 
 ### Fixed
 
+- **ePayment** — `CreatedPayment::fromArray()` throws
+  `VippsMalformedResponseException` when the create-payment response is
+  missing its `reference`, instead of returning an object whose empty
+  reference could never address the payment again.
+- **ePayment** — `CreatePayment` rejects `UserFlow::PushMessage` without a
+  `customerPhoneNumber` at construction (`VippsConfigException`): the API
+  requires `customer` for that flow, and the push has nowhere to go without
+  it.
+- **Core** — `VippsConfig` rejects a `baseUrlOverride` carrying userinfo, a
+  query or a fragment: `ApiTransport` appends API paths verbatim (so
+  query/fragment displace every path), and embedded credentials would leak
+  through `__debugInfo()`. A plain path prefix stays allowed.
+- **Core** — `AuthenticatedTransport` strips caller-supplied `Authorization`
+  headers case-insensitively before adding its Bearer token; a lowercase
+  `authorization` previously survived the merge and silently replaced the
+  Bearer via PSR-7's case-insensitive `withHeader()`.
 - **Core** — `ApiTransport` maps an unencodable JSON payload (e.g. invalid
   UTF-8 in a caller-supplied description) to `VippsConfigException` instead of
   leaking a bare `JsonException`; the payload itself never appears in the
@@ -67,6 +122,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `VippsMalformedResponseException` instead of a bare `ValueError` (unknown
   status), an empty string (missing `chargeId`) or a silent LEGACY relabel
   (unknown pricing type).
+- **Recurring** — response mapping no longer papers over malformed money and
+  identity fields: a missing charge `amount` used to become a valid-looking
+  zero `Amount`, a missing or malformed `currency` was silently relabelled
+  `NOK` (an invalid `SEK` price became an apparently valid NOK one), an
+  unrepresentable `interval` defaulted to monthly, and missing
+  `agreementId`/`vippsConfirmationUrl` (`CreatedAgreement`) or
+  `id`/`productName` (`Agreement`) became empty strings. All now throw
+  `VippsMalformedResponseException`.
+- **Recurring** — `getChargeById()`'s docs claimed Vipps grants the by-id
+  route *higher* rate limits and recommended it for webhook handlers; the
+  spec says the opposite — it is an investigation aid and explicitly not a
+  replacement for `getCharge()`. Comment/README-only; no behavior change.
 
 - **ePayment** — `Payment::fromArray()` now throws
   `VippsMalformedResponseException` (a `VippsException`) when a 2xx body is
@@ -90,6 +157,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convenient place to learn it); `PricingType::Flexible` (v3's third pricing
   model) and `Pricing::$maxAmount` (the ceiling the customer actually
   approved) are now mapped.
+- **Recurring** — `Pricing::flexible(string $currency)` creates FLEXIBLE
+  agreement requests, previously unrepresentable: per the v3 spec the pricing
+  payload is `type` + `currency` only (no amount, no ceiling — the user
+  approves no price up front), and `interval:` may be `null`.
+- **Recurring** — `NewAgreement` rejects an `initialCharge` whose `Amount`
+  currency differs from the pricing currency: the initial-charge payload
+  carries no currency of its own, so Vipps would read the minor units in the
+  pricing currency — the right number in the wrong currency.
 
 ### Security
 

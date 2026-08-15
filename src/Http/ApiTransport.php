@@ -7,6 +7,7 @@ namespace Nesthus\Vipps\Http;
 use JsonException;
 use Nesthus\Vipps\Exceptions\VippsApiException;
 use Nesthus\Vipps\Exceptions\VippsConfigException;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 use Nesthus\Vipps\VippsConfig;
 use Psr\Http\Client\ClientExceptionInterface;
 use Psr\Http\Client\ClientInterface;
@@ -73,14 +74,7 @@ final readonly class ApiTransport implements Transport
             throw VippsApiException::fromTransport($method, $path, $e);
         }
 
-        $status = $response->getStatusCode();
-        $body = (string) $response->getBody();
-
-        if ($status >= 400) {
-            throw VippsApiException::fromResponse($method, $path, $status, $body);
-        }
-
-        return new ApiResponse($status, $this->decode($body), $response->getHeaders());
+        return $this->interpret($method, $path, $response->getStatusCode(), (string) $response->getBody(), $response->getHeaders());
     }
 
     /**
@@ -118,14 +112,27 @@ final readonly class ApiTransport implements Transport
             throw VippsApiException::fromTransport($method, $path, $e);
         }
 
-        $status = $response->getStatusCode();
-        $body = (string) $response->getBody();
+        return $this->interpret($method, $path, $response->getStatusCode(), (string) $response->getBody(), $response->getHeaders());
+    }
 
-        if ($status >= 400) {
+    /**
+     * One gate for both pipelines, so their error contracts cannot drift.
+     *
+     * Anything outside 2xx throws — including 3xx: PSR-18 clients are not
+     * required to follow redirects, no Vipps endpoint legitimately answers
+     * one, and letting a 3xx through would hand callers an "ApiResponse"
+     * whose body is a redirect page, breaking the documented promise that
+     * every non-2xx becomes a VippsApiException.
+     *
+     * @param array<array<string>> $headers
+     */
+    private function interpret(string $method, string $path, int $status, string $body, array $headers): ApiResponse
+    {
+        if ($status < 200 || $status >= 300) {
             throw VippsApiException::fromResponse($method, $path, $status, $body);
         }
 
-        return new ApiResponse($status, $this->decode($body), $response->getHeaders());
+        return new ApiResponse($status, $this->decode($method, $path, $body), $headers);
     }
 
     /**
@@ -150,18 +157,24 @@ final readonly class ApiTransport implements Transport
     }
 
     /**
+     * An empty body is valid (204s, and mutations that answer bare 200s),
+     * but a non-empty body that is not JSON is a Vipps contract violation
+     * and throws. An earlier revision tolerated it as an empty payload; that
+     * only deferred the failure to a confusing missing-field error (or a
+     * silent no-op) far from the response that actually broke the contract.
+     * The body stays out of the exception — same rule as VippsApiException,
+     * an upstream error page can carry internals we must not log.
+     *
      * @return array<mixed>
      */
-    private function decode(string $body): array
+    private function decode(string $method, string $path, string $body): array
     {
         if (trim($body) === '') {
             return [];
         }
 
-        // A 2xx with a non-JSON body would be a Vipps contract violation;
-        // surface it as an empty payload rather than a decode fatal.
         if (! json_validate($body)) {
-            return [];
+            throw VippsMalformedResponseException::invalidJson("{$method} {$path}");
         }
 
         return (array) json_decode($body, true);

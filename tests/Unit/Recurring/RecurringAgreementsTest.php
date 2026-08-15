@@ -106,6 +106,62 @@ it('omits optional agreement fields entirely and supports VARIABLE pricing', fun
         ->and($created->chargeId)->toBeNull(); // no initialCharge, so Vipps sends no chargeId
 });
 
+it('creates a FLEXIBLE agreement with pricing of type and currency only, omitting the interval', function () {
+    // The v3 flexible model: no amount, no ceiling, and no fixed cadence —
+    // the request payload must not invent any of them.
+    $h = new RecurringHarness();
+    $h->http->queueJson(201, ['agreementId' => 'agr_flex', 'vippsConfirmationUrl' => 'https://example.test/confirm']);
+
+    $created = $h->api->createAgreement(new NewAgreement(
+        pricing: Pricing::flexible('NOK'),
+        interval: null,
+        productName: 'Utility bill',
+        merchantRedirectUrl: 'https://example.com/return',
+        merchantAgreementUrl: 'https://example.com/manage',
+    ), idempotencyKey: 'idem-agreement-flex');
+
+    expect($h->lastJson())->toBe([
+        'pricing' => ['type' => 'FLEXIBLE', 'currency' => 'NOK'],
+        'merchantRedirectUrl' => 'https://example.com/return',
+        'merchantAgreementUrl' => 'https://example.com/manage',
+        'productName' => 'Utility bill',
+    ])
+        ->and($created->agreementId)->toBe('agr_flex');
+});
+
+it('still sends the interval on a FLEXIBLE agreement when the merchant provides one', function () {
+    // Interval is optional for FLEXIBLE, not forbidden.
+    $h = new RecurringHarness();
+    $h->http->queueJson(201, ['agreementId' => 'agr_flex2', 'vippsConfirmationUrl' => 'https://example.test/confirm']);
+
+    $h->api->createAgreement(new NewAgreement(
+        pricing: Pricing::flexible('NOK'),
+        interval: Interval::months(1),
+        productName: 'Utility bill',
+        merchantRedirectUrl: 'https://example.com/return',
+        merchantAgreementUrl: 'https://example.com/manage',
+    ), idempotencyKey: 'idem-agreement-flex2');
+
+    expect($h->lastJson()['interval'])->toBe(['unit' => 'MONTH', 'count' => 1]);
+});
+
+it('throws when agreement creation answers 2xx without an agreementId or confirmation URL', function (array $body, string $field) {
+    $h = new RecurringHarness();
+    $h->http->queueJson(201, $body);
+
+    expect(fn() => $h->api->createAgreement(new NewAgreement(
+        pricing: Pricing::legacy(Amount::fromMinor(9900)),
+        interval: Interval::months(1),
+        productName: 'Plan',
+        merchantRedirectUrl: 'https://example.com/return',
+        merchantAgreementUrl: 'https://example.com/manage',
+    ), idempotencyKey: 'idem-agreement-bad'))
+        ->toThrow(VippsMalformedResponseException::class, $field);
+})->with([
+    'missing agreementId' => [['vippsConfirmationUrl' => 'https://example.test/confirm'], 'agreementId'],
+    'missing vippsConfirmationUrl' => [['agreementId' => 'agr_1'], 'vippsConfirmationUrl'],
+]);
+
 it('lists agreements as a plain GET with no idempotency key and no body', function () {
     $h = new RecurringHarness();
     $h->http->queueJson(200, [recurringAgreementBody('agr_1'), recurringAgreementBody('agr_2')]);
@@ -207,6 +263,53 @@ it('throws when an agreement response is missing its status', function () {
 
     expect(fn() => $h->api->getAgreement('agr_1'))
         ->toThrow(VippsMalformedResponseException::class, 'status');
+});
+
+it('throws when an agreement response is missing its id or productName', function (string $field) {
+    // Neither can be defaulted: the id is the only handle for addressing the
+    // agreement again, and productName is what the user approved paying for.
+    $h = new RecurringHarness();
+    $body = recurringAgreementBody('agr_1');
+    unset($body[$field]);
+    $h->http->queueJson(200, $body);
+
+    expect(fn() => $h->api->getAgreement('agr_1'))
+        ->toThrow(VippsMalformedResponseException::class, $field);
+})->with(['id', 'productName']);
+
+it('throws when a non-FLEXIBLE agreement response has no interval', function () {
+    $h = new RecurringHarness();
+    $body = recurringAgreementBody('agr_1');
+    unset($body['interval']);
+    $h->http->queueJson(200, $body);
+
+    expect(fn() => $h->api->getAgreement('agr_1'))
+        ->toThrow(VippsMalformedResponseException::class, 'interval');
+});
+
+it('maps a FLEXIBLE agreement response with no interval to a null interval', function () {
+    $h = new RecurringHarness();
+    $h->http->queueJson(200, [
+        'id' => 'agr_flex',
+        'status' => 'ACTIVE',
+        'pricing' => ['type' => 'FLEXIBLE', 'currency' => 'NOK'],
+        'productName' => 'Utility bill',
+    ]);
+
+    $agreement = $h->api->getAgreement('agr_flex');
+
+    expect($agreement->pricing->type)->toBe(PricingType::Flexible)
+        ->and($agreement->interval)->toBeNull();
+});
+
+it('throws on an unrepresentable interval in an agreement response instead of calling it monthly', function () {
+    $h = new RecurringHarness();
+    $body = recurringAgreementBody('agr_1');
+    $body['interval'] = ['unit' => 'FORTNIGHT', 'count' => 1];
+    $h->http->queueJson(200, $body);
+
+    expect(fn() => $h->api->getAgreement('agr_1'))
+        ->toThrow(VippsMalformedResponseException::class, 'FORTNIGHT');
 });
 
 it('stops an agreement with a STOPPED patch under an idempotency key', function () {

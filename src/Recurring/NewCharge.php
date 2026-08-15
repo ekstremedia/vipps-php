@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nesthus\Vipps\Recurring;
 
+use DateTimeImmutable;
 use DateTimeInterface;
 use Nesthus\Vipps\Amount;
 use Nesthus\Vipps\Exceptions\VippsConfigException;
@@ -20,7 +21,9 @@ use Nesthus\Vipps\Exceptions\VippsConfigException;
  *   Vipps keeps retrying a failed collection after the due date before
  *   marking the charge FAILED; 0 means one attempt only.
  * - UNSCHEDULED forbids `due` — Vipps collects it as soon as possible, so
- *   a due date would be a promise the API cannot keep.
+ *   a due date would be a promise the API cannot keep. retryDays follows:
+ *   with no due date there is no retry window, so the spec allows it only
+ *   omitted or 0.
  *
  * No currency field: a charge is always in the agreement's pricing currency.
  */
@@ -48,6 +51,10 @@ final readonly class NewCharge
             throw new VippsConfigException('An UNSCHEDULED charge must not set due — Vipps collects it as soon as possible.');
         }
 
+        if ($effectiveType === ChargeType::Unscheduled && $retryDays !== null && $retryDays > 0) {
+            throw new VippsConfigException('An UNSCHEDULED charge allows retryDays only omitted or 0 — there is no due date to retry after.');
+        }
+
         if ($retryDays !== null && ($retryDays < 0 || $retryDays > 14)) {
             throw new VippsConfigException('retryDays must be between 0 and 14.');
         }
@@ -57,6 +64,14 @@ final readonly class NewCharge
         } elseif (is_string($due)) {
             if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $due) !== 1) {
                 throw new VippsConfigException("due must be an ISO date (YYYY-MM-DD), got \"{$due}\".");
+            }
+
+            // The shape check alone waves 2026-02-30 through; PHP would then
+            // silently normalise it, so require the parsed date to round-trip
+            // back to the exact input.
+            $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $due);
+            if ($parsed === false || $parsed->format('Y-m-d') !== $due) {
+                throw new VippsConfigException("due must be a real calendar date, got \"{$due}\".");
             }
 
             $this->due = $due;

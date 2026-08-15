@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Nesthus\Vipps\Auth\AccessToken;
 use Nesthus\Vipps\Auth\Psr16TokenCache;
+use Nesthus\Vipps\Exceptions\VippsConfigException;
 use Nesthus\Vipps\Tests\Support\FrozenClock;
 use Psr\SimpleCache\CacheInterface;
 
@@ -240,4 +241,58 @@ it('honors a custom prefix', function () {
 
     expect($this->store->items)->toHaveKey('other.key')
         ->and($cache->get('key'))->toBeInstanceOf(AccessToken::class);
+});
+
+it('keeps every generated key within PSR-16\'s 64-character portable limit', function () {
+    // TokenProvider's suffix is a 64-char sha256 digest; with the 20-char
+    // default prefix the naive concatenation is 84 — longer than the only
+    // key length PSR-16 obliges a store to support.
+    $key = hash('sha256', 'production|https://api.vipps.no|123456|client-id');
+
+    $this->cache->put($key, new AccessToken('t-1', $this->clock->now()->modify('+1 hour')));
+
+    $seen = array_keys($this->store->items);
+    expect($seen)->toHaveCount(1);
+    foreach ($seen as $storageKey) {
+        expect(strlen((string) $storageKey))->toBeLessThanOrEqual(64)
+            ->and((string) $storageKey)->toStartWith('nesthus-vipps.token.');
+    }
+
+    // get() and forget() must derive the same shortened key, or they would
+    // silently talk past the entry put() just wrote.
+    expect($this->cache->get($key)?->value())->toBe('t-1');
+    $this->cache->forget($key);
+    expect($this->store->items)->toBe([]);
+});
+
+it('round-trips and forgets under a shortened key, and distinct long keys stay distinct', function () {
+    $keyA = hash('sha256', 'sales-unit-a');
+    $keyB = hash('sha256', 'sales-unit-b');
+
+    $this->cache->put($keyA, new AccessToken('t-a', $this->clock->now()->modify('+1 hour')));
+    $this->cache->put($keyB, new AccessToken('t-b', $this->clock->now()->modify('+1 hour')));
+
+    expect($this->cache->get($keyA)?->value())->toBe('t-a')
+        ->and($this->cache->get($keyB)?->value())->toBe('t-b')
+        ->and($this->store->items)->toHaveCount(2);
+
+    $this->cache->forget($keyA);
+
+    expect($this->cache->get($keyA))->toBeNull()
+        ->and($this->cache->get($keyB)?->value())->toBe('t-b');
+});
+
+it('rejects a prefix too long to leave room for a usable suffix', function () {
+    new Psr16TokenCache($this->store, prefix: str_repeat('p', 45), clock: $this->clock);
+})->throws(VippsConfigException::class, 'prefix');
+
+it('accepts a prefix at the exact boundary', function () {
+    $cache = new Psr16TokenCache($this->store, prefix: str_repeat('p', 44), clock: $this->clock);
+    $key = hash('sha256', 'anything');
+
+    $cache->put($key, new AccessToken('t-1', $this->clock->now()->modify('+1 hour')));
+
+    $storageKey = array_keys($this->store->items)[0];
+    expect(strlen((string) $storageKey))->toBe(64)
+        ->and($cache->get($key)?->value())->toBe('t-1');
 });

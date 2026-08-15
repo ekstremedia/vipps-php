@@ -84,4 +84,26 @@ describe('baseUrl', function () {
         'empty authority' => ['http://'],
         'bare word' => ['http'],
     ])->throws(VippsConfigException::class, 'absolute http(s)');
+
+    it('rejects an override carrying userinfo, a query or a fragment', function (string $override) {
+        // ApiTransport appends API paths verbatim, so a query/fragment would
+        // displace every path — and userinfo would leak via __debugInfo(),
+        // which prints baseUrlOverride unredacted.
+        coreValidConfig(['baseUrlOverride' => $override]);
+    })->with([
+        'user and password' => ['https://user:password@mock.test'],
+        'user only' => ['https://user@mock.test'],
+        'query' => ['https://mock.test?tenant=1'],
+        'empty query' => ['https://mock.test?'],
+        'fragment' => ['https://mock.test#section'],
+        'empty fragment' => ['https://mock.test#'],
+    ])->throws(VippsConfigException::class, 'absolute http(s)');
+
+    it('still allows a plain path prefix on the override', function () {
+        // Reverse proxies and mock servers under a subpath are the point of
+        // the override — only userinfo/query/fragment are hostile to it.
+        $config = coreValidConfig(['baseUrlOverride' => 'http://localhost:8080/vipps-mock']);
+
+        expect($config->baseUrl())->toBe('http://localhost:8080/vipps-mock');
+    });
 });

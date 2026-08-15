@@ -55,6 +55,17 @@ final readonly class AuthenticatedTransport implements Transport
      */
     private function send(string $token, string $method, string $path, ?array $json, array $headers, ?string $idempotencyKey): ApiResponse
     {
+        // The `+` merge only wins on an EXACT key match: a caller's
+        // lowercase 'authorization' survives it as a distinct array key, and
+        // PSR-7's withHeader() replaces case-insensitively downstream — so
+        // that entry would silently overwrite the Bearer. This decorator
+        // exists to own authentication; strip every casing of the header.
+        $headers = array_filter(
+            $headers,
+            static fn(string $name): bool => strcasecmp($name, 'Authorization') !== 0,
+            ARRAY_FILTER_USE_KEY,
+        );
+
         return $this->inner->request(
             $method,
             $path,
