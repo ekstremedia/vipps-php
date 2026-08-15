@@ -1,0 +1,57 @@
+{
+    "name": "nesthus/vipps-php",
+    "description": "Unofficial framework-agnostic PHP SDK for Vipps MobilePay: ePayment, Recurring, Login (OIDC) and Webhooks.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "vipps",
+        "mobilepay",
+        "payment",
+        "recurring",
+        "epayment",
+        "oidc",
+        "webhooks",
+        "psr-18"
+    ],
+    "authors": [
+        {
+            "name": "Terje Nesthus"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "psr/clock": "^1.0",
+        "psr/http-client": "^1.0",
+        "psr/http-factory": "^1.0",
+        "psr/http-message": "^1.1 || ^2.0",
+        "psr/simple-cache": "^2.0 || ^3.0"
+    },
+    "require-dev": {
+        "guzzlehttp/psr7": "^2.7",
+        "laravel/pint": "^1.18",
+        "pestphp/pest": "^3.0",
+        "phpstan/phpstan": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Nesthus\\Vipps\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Nesthus\\Vipps\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "scripts": {
+        "test": "pest",
+        "lint": "pint --test",
+        "fix": "pint",
+        "analyse": "phpstan analyse --memory-limit=512M"
+    }
+}
