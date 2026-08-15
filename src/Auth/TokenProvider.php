@@ -36,13 +36,13 @@ final readonly class TokenProvider
 
         $cached = $this->cache->get($key);
         if ($cached !== null && $cached->isFreshAt($this->clock->now(), $this->freshnessMarginSeconds)) {
-            return $cached->value;
+            return $cached->value();
         }
 
         $fresh = $this->fetch();
         $this->cache->put($key, $fresh);
 
-        return $fresh->value;
+        return $fresh->value();
     }
 
     /**
@@ -59,7 +59,7 @@ final readonly class TokenProvider
     {
         $response = $this->transport->request('POST', '/accesstoken/get', headers: [
             'client_id' => $this->config->clientId,
-            'client_secret' => $this->config->clientSecret,
+            'client_secret' => $this->config->clientSecret(),
         ]);
 
         $token = $response->data['access_token'] ?? null;
@@ -101,8 +101,12 @@ final readonly class TokenProvider
 
     private function cacheKey(): string
     {
+        // baseUrl() participates so a config pointed at a mock server via
+        // baseUrlOverride never shares a cache entry with the real host —
+        // environment+MSN+client alone are identical in that scenario.
         return hash('sha256', implode('|', [
             $this->config->environment->value,
+            $this->config->baseUrl(),
             $this->config->merchantSerialNumber,
             $this->config->clientId,
         ]));

@@ -32,7 +32,7 @@ it('registers a webhook with the caller-supplied idempotency key and returns the
     );
 
     expect($registered->id)->toBe('wh-1')
-        ->and($registered->secret)->toBe('whsec-abc');
+        ->and($registered->secret())->toBe('whsec-abc');
 
     $request = $http->lastRequest();
     expect($request->getMethod())->toBe('POST')
@@ -51,7 +51,7 @@ it('tolerates unknown extra keys in the register response', function (): void {
     $registered = webhooksApiOver($http)->register('https://merchant.example.no/h', ['e.v1'], 'idem-1');
 
     expect($registered->id)->toBe('wh-1')
-        ->and($registered->secret)->toBe('whsec-abc');
+        ->and($registered->secret())->toBe('whsec-abc');
 });
 
 it('lists registered webhooks', function (): void {

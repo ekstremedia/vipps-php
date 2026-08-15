@@ -6,6 +6,107 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (0.x: the public API may still move between minor versions).
 
+## [Unreleased]
+
+### Changed
+
+- **Core (breaking)** — `Psr16TokenCache`'s default key prefix changed from
+  `nesthus-vipps:token:` to `nesthus-vipps.token.`: `:` is a RESERVED key
+  character in PSR-16 (`{}()/\@:`), so strict stores (e.g. Symfony's
+  `Psr16Cache`) threw on every operation. Entries under the old prefix are
+  simply orphaned — tokens refetch on their own. The class also takes an
+  optional PSR-20 `ClockInterface`, so TTL math no longer reads `time()`
+  directly.
+
+- **Recurring (breaking)** — `Charge` now follows the v3 contract for money
+  totals and failure details: captured/refunded/cancelled amounts live in the
+  required `Charge::$summary` (`ChargeSummary`) instead of the v2-only
+  top-level `amountRefunded` (which v3 never sends, so refund guards read
+  null forever), and the failure pair is `failureReason` +
+  `failureDescription` — v3 has no `failureCode`.
+- **Recurring (breaking)** — `captureCharge()` requires an `Amount`: v3's
+  capture request has a required `amount` even for a full capture (the old
+  empty-body "full capture" violated the spec), and the deprecated
+  `description` field is no longer sent.
+- **Recurring (breaking)** — `listCharges()` returns a `ChargePage`
+  (`charges` + `continuationToken`) and accepts the previous page's token,
+  because v3 pages this endpoint through `Continuation-Token` headers.
+- **Recurring (breaking)** — `NewCharge` validates `due`/`retryDays` against
+  the effective charge type: RECURRING (the default) requires both,
+  UNSCHEDULED forbids `due` and omits null fields from the payload —
+  previously an UNSCHEDULED charge was unrepresentable.
+
+### Fixed
+
+- **Core** — `ApiTransport` maps an unencodable JSON payload (e.g. invalid
+  UTF-8 in a caller-supplied description) to `VippsConfigException` instead of
+  leaking a bare `JsonException`; the payload itself never appears in the
+  message.
+- **Core** — `AuthenticatedTransport` no longer "retries" a 401 that came
+  from the token endpoint itself: bad keys now fail after exactly one token
+  request instead of a doomed second fetch with the same keys. The
+  single-retry behavior for a revoked bearer on the original request is
+  unchanged.
+- **Core** — `TokenProvider`'s cache key now includes the resolved base URL,
+  so a config pointed at a mock server via `baseUrlOverride` no longer shares
+  cached tokens with the real host.
+- **Core** — `VippsConfig` validates `baseUrlOverride` with a real URL parse
+  (http/https scheme + host required); the old `str_starts_with('http')`
+  check accepted values like `httpfoo://…`.
+- **Core** — `Vipps::login()` memoizes its `LoginApi` like the other lazies;
+  a fresh instance per call silently defeated the per-instance OIDC discovery
+  memoization.
+- **Login** — the OAuth form body is joined with a literal `&` regardless of
+  the host's `arg_separator.output` ini setting.
+- **Webhooks** — closed the 0.1.0 "webhook secret encoding unconfirmed"
+  limitation: Vipps' official request-authentication sample keys HMAC-SHA256
+  with the secret's raw UTF-8 bytes (verified 2026-08-15) — exactly what
+  `SignatureValidator` already does. Comment-only; no behavior change.
+- **Recurring** — a 2xx body missing `status`, `summary` or `chargeId`, or
+  carrying an unknown agreement/charge status or pricing type, now throws
+  `VippsMalformedResponseException` instead of a bare `ValueError` (unknown
+  status), an empty string (missing `chargeId`) or a silent LEGACY relabel
+  (unknown pricing type).
+
+- **ePayment** — `Payment::fromArray()` now throws
+  `VippsMalformedResponseException` (a `VippsException`) when a 2xx body is
+  missing `state` or carries a state this SDK does not know, instead of
+  letting a native `ValueError` escape the documented throw surface.
+- **Login** — `buildAuthorizationUrl()` refuses a discovery document whose
+  `authorization_endpoint` is missing or not an absolute http(s) URL
+  (`VippsMalformedResponseException`), instead of silently building a
+  relative redirect that the browser would resolve against the merchant's
+  own origin.
+
+### Added
+
+- **ePayment** — `CreatePayment` validates `customerPhoneNumber` at
+  construction as a bare MSISDN (digits only, country code included, no plus
+  sign) — the same rule `NewAgreement.phoneNumber` already enforced for the
+  identical wire concept.
+- **Recurring** — `listAgreements()` takes optional `pageNumber`/`pageSize`;
+  `CreatedAgreement::$chargeId` exposes the initial charge's id (set when the
+  `NewAgreement` carried an `initialCharge` — this response is the only
+  convenient place to learn it); `PricingType::Flexible` (v3's third pricing
+  model) and `Pricing::$maxAmount` (the ceiling the customer actually
+  approved) are now mapped.
+
+### Security
+
+- **Core (breaking)** — secrets moved from public properties to methods
+  backed by the engine's `SensitiveParameterValue`:
+  `VippsConfig->clientSecret`/`->subscriptionKey` → `clientSecret()`/
+  `subscriptionKey()`, `AccessToken->value` → `value()`,
+  `RegisteredWebhook->secret` → `secret()`. `__debugInfo()` covers
+  `var_dump()`/`print_r()`, but `var_export()` ignores it — the wrapper is
+  what keeps a secret out of all three dump functions (and out of
+  `serialize()`, which it refuses). Constructor parameters carry
+  `#[SensitiveParameter]`, so stack traces redact them too; non-secret fields
+  stay readable in dumps.
+- **Login** — `TokenSet` marks `accessToken`/`idToken` as
+  `#[SensitiveParameter]` and redacts both from `var_dump`/`print_r` output
+  via `__debugInfo()`; non-secret fields stay readable.
+
 ## [0.1.0] - 2026-08-15
 
 ### Added

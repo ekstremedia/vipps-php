@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use GuzzleHttp\Psr7\HttpFactory;
+use Nesthus\Vipps\Auth\InMemoryTokenCache;
 use Nesthus\Vipps\Auth\TokenProvider;
 use Nesthus\Vipps\Exceptions\VippsApiException;
 use Nesthus\Vipps\Http\ApiTransport;
@@ -124,6 +125,32 @@ it('forget() drops the cache so the next call fetches fresh', function () {
     $provider->forget();
 
     expect($provider->token())->toBe('token-2')
+        ->and($this->client->requests)->toHaveCount(2);
+});
+
+it('scopes the cache entry to the exact base URL — an override never shares a token with the real host', function () {
+    // Same environment, MSN and client id; only baseUrlOverride differs.
+    // Without baseUrl() in the cache key these two would be one entry, and a
+    // token minted by a local mock server would be replayed against apitest.
+    $cache = new InMemoryTokenCache();
+    $factory = new HttpFactory();
+
+    $providerFor = fn(VippsConfig $config): TokenProvider => new TokenProvider(
+        new ApiTransport($this->client, $factory, $factory, $config),
+        $config,
+        cache: $cache,
+        clock: $this->clock,
+    );
+
+    $real = $providerFor(new VippsConfig('client-id', 'client-secret', 'sub-key', '123456'));
+    $mock = $providerFor(new VippsConfig('client-id', 'client-secret', 'sub-key', '123456', baseUrlOverride: 'http://localhost:8080'));
+
+    $this->client
+        ->queueJson(200, ['access_token' => 'real-token', 'expires_in' => 3600])
+        ->queueJson(200, ['access_token' => 'mock-token', 'expires_in' => 3600]);
+
+    expect($real->token())->toBe('real-token')
+        ->and($mock->token())->toBe('mock-token')   // a shared entry would replay 'real-token' with no second fetch
         ->and($this->client->requests)->toHaveCount(2);
 });
 

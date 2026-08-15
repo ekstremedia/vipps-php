@@ -71,6 +71,23 @@ it('rejects an out-of-spec reference', function (string $reference) {
     'empty' => [''],
 ])->throws(VippsConfigException::class);
 
+it('rejects a customer phone number that is not a bare MSISDN', function (string $phone) {
+    // Same wire concept, same rule as Recurring's NewAgreement.phoneNumber:
+    // country code included, no plus sign.
+    new CreatePayment(
+        amount: Amount::fromMinor(100),
+        reference: 'order-2026-000126',
+        returnUrl: 'https://shop.example/return',
+        customerPhoneNumber: $phone,
+    );
+})->with([
+    'plus prefix' => ['+4712345678'],
+    'spaces' => ['47 12 34 56 78'],
+    '7 digits (too short)' => ['1234567'],
+    '16 digits (too long)' => [str_repeat('9', 16)],
+    'empty' => [''],
+])->throws(VippsConfigException::class);
+
 it('accepts references at the 8 and 64 character boundaries', function (string $reference) {
     $payment = new CreatePayment(
         amount: Amount::fromMinor(100),

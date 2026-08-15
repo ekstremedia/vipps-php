@@ -6,6 +6,7 @@ namespace Nesthus\Vipps\Login;
 
 use Nesthus\Vipps\Exceptions\VippsApiException;
 use Nesthus\Vipps\Exceptions\VippsConfigException;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 use Nesthus\Vipps\Http\ApiTransport;
 use Nesthus\Vipps\VippsConfig;
 
@@ -43,15 +44,40 @@ final class LoginApi
      * The URL to send the user's browser to. Pure URL building — no HTTP
      * beyond the memoized discovery — so it is safe to call while rendering.
      *
-     * The discovered authorization endpoint is used verbatim (the browser
-     * goes wherever Vipps says), with the standard authorization-code
-     * parameters appended; when the request carries a PKCE verifier, its
-     * S256 challenge is derived here so the verifier itself never leaves
-     * the caller until the code exchange.
+     * The discovered authorization endpoint is used verbatim once proven an
+     * absolute http(s) URL (the browser goes wherever Vipps says), with the
+     * standard authorization-code parameters appended; when the request
+     * carries a PKCE verifier, its S256 challenge is derived here so the
+     * verifier itself never leaves the caller until the code exchange.
+     *
+     * @throws VippsMalformedResponseException when discovery published no usable authorization endpoint
      */
     public function buildAuthorizationUrl(AuthorizationRequest $request): string
     {
         $endpoint = $this->configuration()->authorizationEndpoint;
+
+        // Validated here — the one place the URL leaves the SDK verbatim —
+        // rather than eagerly in configuration(): the transport-called
+        // endpoints are already host-checked in transportPathFor(), and a
+        // broken authorization_endpoint must not fail an unrelated userinfo
+        // call. The check itself is load-bearing: OpenIdConfiguration maps a
+        // missing key to '', and appending the query to '' (or any relative
+        // path) yields a RELATIVE redirect the browser resolves against the
+        // MERCHANT's own origin — silently sending the user, state, PKCE
+        // challenge and all, right back where they came from.
+        if ($endpoint === '') {
+            throw VippsMalformedResponseException::missingField('OIDC discovery document', 'authorization_endpoint');
+        }
+
+        $parts = parse_url($endpoint);
+        $isAbsoluteHttpUrl = is_array($parts)
+            && isset($parts['scheme'], $parts['host'])
+            && $parts['host'] !== ''
+            && in_array(strtolower($parts['scheme']), ['http', 'https'], true);
+
+        if (! $isAbsoluteHttpUrl) {
+            throw VippsMalformedResponseException::unexpectedValue('OIDC discovery document', 'authorization_endpoint', $endpoint);
+        }
 
         $query = [
             'response_type' => 'code',
@@ -98,7 +124,7 @@ final class LoginApi
         }
 
         $response = $this->transport->requestForm('POST', $path, $form, [
-            'Authorization' => 'Basic ' . base64_encode("{$this->config->clientId}:{$this->config->clientSecret}"),
+            'Authorization' => 'Basic ' . base64_encode("{$this->config->clientId}:{$this->config->clientSecret()}"),
         ]);
 
         $accessToken = $response->data['access_token'] ?? null;

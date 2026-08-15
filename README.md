@@ -145,11 +145,15 @@ if ($agreement->status === AgreementStatus::Active) {
 }
 ```
 
-Also available: `listAgreements()`, `updateAgreement()` (price/text changes),
+Also available: `listAgreements()` (status filter plus optional
+`pageNumber`/`pageSize`), `updateAgreement()` (price/text changes),
 `stopAgreement()` (final — a stopped agreement can never be reactivated),
-`listCharges()`, `getCharge()`, `getChargeById()` (higher rate limits; prefer
-it in webhook handlers), `cancelCharge()`, `captureCharge()` (for
-`RESERVE_CAPTURE` charges) and `refundCharge()`.
+`listCharges()` (returns a `ChargePage`; feed its `continuationToken` back in
+to page), `getCharge()`, `getChargeById()` (higher rate limits; prefer it in
+webhook handlers), `cancelCharge()`, `captureCharge()` (for `RESERVE_CAPTURE`
+charges — v3 requires an explicit amount even for a full capture) and
+`refundCharge()`. Charge money totals (captured/refunded/cancelled) live on
+`Charge->summary`.
 
 ## ePayment quick start
 
@@ -218,7 +222,7 @@ $tokens = $vipps->login()->exchangeCode(
 );
 
 $claims = $tokens->idTokenClaims();                    // sub, and whatever the granted scopes surface
-$profile = $vipps->login()->userinfo($tokens->accessToken); // authorized by the USER's token, not the merchant's
+$profile = $vipps->login()->userinfo($tokens->accessToken()); // authorized by the USER's token, not the merchant's
 ```
 
 > [!CAUTION]
@@ -244,9 +248,11 @@ $hook = $vipps->webhooks()->register(
     $idempotencyKey,
 );
 
-// ⚠️ $hook->secret is shown EXACTLY ONCE — Vipps never re-reveals it, and
+// ⚠️ $hook->secret() is shown EXACTLY ONCE — Vipps never re-reveals it, and
 // all() returns id/url/events only. Persist it (encrypted, next to $hook->id)
 // before doing anything else. If storage fails, delete() and register() again.
+// The secret is a method, not a property: dumping the object (print_r,
+// var_export, var_dump) shows ***redacted*** instead of signing material.
 ```
 
 Verify every inbound delivery before trusting a byte of it:

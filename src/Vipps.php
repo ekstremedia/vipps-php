@@ -39,6 +39,8 @@ final class Vipps
 
     private ?TokenProvider $tokenProvider = null;
 
+    private ?LoginApi $loginApi = null;
+
     public function __construct(
         private readonly VippsConfig $config,
         private readonly ClientInterface $httpClient,
@@ -75,7 +77,11 @@ final class Vipps
 
     public function login(): LoginApi
     {
-        return new LoginApi($this->transport(), $this->config);
+        // Memoized like the other lazies, but here it is load-bearing:
+        // LoginApi caches the OIDC discovery document per instance, so a
+        // fresh instance per call would re-fetch discovery on every step of
+        // one login flow.
+        return $this->loginApi ??= new LoginApi($this->transport(), $this->config);
     }
 
     public function webhooks(): WebhooksApi

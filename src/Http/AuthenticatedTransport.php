@@ -28,8 +28,15 @@ final readonly class AuthenticatedTransport implements Transport
         array $headers = [],
         ?string $idempotencyKey = null,
     ): ApiResponse {
+        // The token is fetched OUTSIDE the try on purpose: a 401 raised here
+        // comes from /accesstoken/get itself — the keys are bad — and a retry
+        // would refetch with those very same keys, a doomed second attempt.
+        // The retry below is strictly for the ORIGINAL request rejecting a
+        // token we believed fresh.
+        $token = $this->tokens->token();
+
         try {
-            return $this->send($method, $path, $json, $headers, $idempotencyKey);
+            return $this->send($token, $method, $path, $json, $headers, $idempotencyKey);
         } catch (VippsApiException $e) {
             if ($e->status !== 401) {
                 throw $e;
@@ -37,7 +44,8 @@ final readonly class AuthenticatedTransport implements Transport
 
             $this->tokens->forget();
 
-            return $this->send($method, $path, $json, $headers, $idempotencyKey);
+            // A 401 from this refetch propagates untouched — no third try.
+            return $this->send($this->tokens->token(), $method, $path, $json, $headers, $idempotencyKey);
         }
     }
 
@@ -45,13 +53,13 @@ final readonly class AuthenticatedTransport implements Transport
      * @param array<string, mixed>|null $json
      * @param array<string, string> $headers
      */
-    private function send(string $method, string $path, ?array $json, array $headers, ?string $idempotencyKey): ApiResponse
+    private function send(string $token, string $method, string $path, ?array $json, array $headers, ?string $idempotencyKey): ApiResponse
     {
         return $this->inner->request(
             $method,
             $path,
             $json,
-            ['Authorization' => 'Bearer ' . $this->tokens->token()] + $headers,
+            ['Authorization' => 'Bearer ' . $token] + $headers,
             $idempotencyKey,
         );
     }

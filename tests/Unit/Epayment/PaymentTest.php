@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Nesthus\Vipps\Epayment\Payment;
 use Nesthus\Vipps\Epayment\PaymentState;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 
 it('maps a fully populated payment, ignoring unknown extra keys', function () {
     $payment = Payment::fromArray([
@@ -70,5 +71,15 @@ it('maps a malformed aggregate amount to null instead of throwing', function () 
 });
 
 it('refuses a state this SDK does not know rather than guessing', function () {
-    Payment::fromArray(['reference' => 'order-2026-000123', 'state' => 'SOMETHING_NEW']);
-})->throws(ValueError::class);
+    expect(fn() => Payment::fromArray(['reference' => 'order-2026-000123', 'state' => 'SOMETHING_NEW']))
+        ->toThrow(VippsMalformedResponseException::class, 'SOMETHING_NEW');
+});
+
+it('refuses a payment without a state rather than inventing one', function (array $body) {
+    expect(fn() => Payment::fromArray($body))
+        ->toThrow(VippsMalformedResponseException::class, 'state');
+})->with([
+    'state absent' => [['reference' => 'order-2026-000123']],
+    'state not a string' => [['reference' => 'order-2026-000123', 'state' => 42]],
+    'state empty' => [['reference' => 'order-2026-000123', 'state' => '']],
+]);

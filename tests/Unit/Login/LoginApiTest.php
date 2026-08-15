@@ -5,6 +5,7 @@ declare(strict_types=1);
 use GuzzleHttp\Psr7\HttpFactory;
 use Nesthus\Vipps\Exceptions\VippsApiException;
 use Nesthus\Vipps\Exceptions\VippsConfigException;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 use Nesthus\Vipps\Http\ApiTransport;
 use Nesthus\Vipps\Login\AuthorizationRequest;
 use Nesthus\Vipps\Login\LoginApi;
@@ -113,6 +114,38 @@ it('builds the authorization URL with the standard code-flow parameters', functi
         ->and($http->requests)->toHaveCount(1); // discovery only — URL building is pure
 });
 
+it('refuses a discovery document without an authorization endpoint', function () {
+    [$login, $http] = loginTestApi();
+    $document = loginDiscoveryDocument();
+    unset($document['authorization_endpoint']);
+    $http->queueJson(200, $document);
+
+    // The trap this guards: OpenIdConfiguration maps the missing key to '',
+    // and '' + '?…' is a RELATIVE URL that would redirect the user — OAuth
+    // params and all — to the merchant's own origin instead of Vipps.
+    expect(fn() => $login->buildAuthorizationUrl(new AuthorizationRequest(
+        redirectUri: 'https://example.test/callback',
+        state: 'state-abc',
+    )))->toThrow(VippsMalformedResponseException::class, 'authorization_endpoint');
+});
+
+it('refuses an authorization endpoint that is not an absolute http(s) URL', function (string $endpoint) {
+    [$login, $http] = loginTestApi();
+    $document = loginDiscoveryDocument();
+    $document['authorization_endpoint'] = $endpoint;
+    $http->queueJson(200, $document);
+
+    expect(fn() => $login->buildAuthorizationUrl(new AuthorizationRequest(
+        redirectUri: 'https://example.test/callback',
+        state: 'state-abc',
+    )))->toThrow(VippsMalformedResponseException::class, 'authorization_endpoint');
+})->with([
+    'relative path' => ['/access-management-1.0/access/oauth2/auth'],
+    'schemeless' => ['apitest.vipps.no/oauth2/auth'],
+    'non-http scheme' => ['javascript:alert(1)'],
+    'scheme without host' => ['https://'],
+]);
+
 it('omits nonce and PKCE parameters when not requested', function () {
     [$login, $http] = loginTestApi();
     $http->queueJson(200, loginDiscoveryDocument());
@@ -164,8 +197,8 @@ it('sends the code exchange as a Basic-authenticated form post', function () {
             'redirect_uri' => 'https://example.test/callback',
             'code_verifier' => 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
         ])
-        ->and($tokens->accessToken)->toBe('user-access-token')
-        ->and($tokens->idToken)->toBe('aGVhZGVy.cGF5bG9hZA.')
+        ->and($tokens->accessToken())->toBe('user-access-token')
+        ->and($tokens->idToken())->toBe('aGVhZGVy.cGF5bG9hZA.')
         ->and($tokens->tokenType)->toBe('bearer')
         ->and($tokens->expiresIn)->toBe(3600)
         ->and($tokens->scope)->toBe('openid name');

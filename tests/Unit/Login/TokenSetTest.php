@@ -31,15 +31,15 @@ it('maps the token response, tolerating extra and missing keys', function () {
         'brand_new_vipps_field' => 'ignored',
     ]);
 
-    expect($tokens->accessToken)->toBe('user-access-token')
-        ->and($tokens->idToken)->toBe('x.y.z')
+    expect($tokens->accessToken())->toBe('user-access-token')
+        ->and($tokens->idToken())->toBe('x.y.z')
         ->and($tokens->tokenType)->toBe('bearer')
         ->and($tokens->expiresIn)->toBe(3600)
         ->and($tokens->scope)->toBe('openid name');
 
     $sparse = TokenSet::fromArray(['access_token' => 'user-access-token']);
 
-    expect($sparse->idToken)->toBe('')
+    expect($sparse->idToken())->toBe('')
         ->and($sparse->tokenType)->toBe('')
         ->and($sparse->expiresIn)->toBe(0)
         ->and($sparse->scope)->toBe('');
@@ -61,6 +61,28 @@ it('decodes id token claims without verifying the signature', function () {
     ]);
 
     expect($tokens->idTokenClaims())->toBe($claims);
+});
+
+it('redacts both bearer secrets from debug output while keeping non-secrets readable', function () {
+    $tokens = TokenSet::fromArray([
+        'access_token' => 'top-secret-access-token',
+        'id_token' => 'header.top-secret-claims.signature',
+        'token_type' => 'bearer',
+        'expires_in' => 3600,
+        'scope' => 'openid name',
+    ]);
+
+    ob_start();
+    var_dump($tokens);
+    $varDump = (string) ob_get_clean();
+
+    foreach ([print_r($tokens, true), $varDump] as $dump) {
+        expect($dump)->not->toContain('top-secret-access-token')
+            ->not->toContain('top-secret-claims')
+            ->toContain('***redacted***')
+            ->toContain('bearer')       // non-secrets stay useful for debugging
+            ->toContain('openid name');
+    }
 });
 
 it('rejects an id token that is not a compact JWT', function () {

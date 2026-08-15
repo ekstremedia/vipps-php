@@ -71,4 +71,17 @@ describe('baseUrl', function () {
     it('rejects a non-http scheme', function () {
         coreValidConfig(['baseUrlOverride' => 'ftp://mock.test']);
     })->throws(VippsConfigException::class, 'absolute http(s)');
+
+    it('rejects a scheme that merely starts with "http"', function () {
+        // The old str_starts_with('http') check waved this through.
+        coreValidConfig(['baseUrlOverride' => 'httpfoo://mock.test']);
+    })->throws(VippsConfigException::class, 'absolute http(s)');
+
+    it('rejects an http URL with no host', function (string $override) {
+        coreValidConfig(['baseUrlOverride' => $override]);
+    })->with([
+        'scheme only' => ['http:'],
+        'empty authority' => ['http://'],
+        'bare word' => ['http'],
+    ])->throws(VippsConfigException::class, 'absolute http(s)');
 });

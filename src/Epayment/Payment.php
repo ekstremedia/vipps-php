@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nesthus\Vipps\Epayment;
 
 use Nesthus\Vipps\Amount;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 
 /**
  * GET /epayment/v1/payments/{reference} — a snapshot of one payment. Money
@@ -28,11 +29,25 @@ final readonly class Payment
 
     /**
      * @param array<string, mixed> $data
+     *
+     * @throws VippsMalformedResponseException when `state` is missing or unknown
      */
     public static function fromArray(array $data): self
     {
         $reference = $data['reference'] ?? null;
+
+        // tryFrom, not from: a state this SDK does not know (Vipps extends
+        // enums without notice) must surface as the SDK's own
+        // contract-violation exception — catchable at a `VippsException`
+        // boundary — not as a native ValueError escaping the documented
+        // throw surface.
         $state = $data['state'] ?? null;
+        if (! is_string($state) || $state === '') {
+            throw VippsMalformedResponseException::missingField('epayment payment', 'state');
+        }
+
+        $paymentState = PaymentState::tryFrom($state)
+            ?? throw VippsMalformedResponseException::unexpectedValue('epayment payment', 'state', $state);
 
         $aggregate = $data['aggregate'] ?? null;
         if (! is_array($aggregate)) {
@@ -47,7 +62,7 @@ final readonly class Payment
 
         return new self(
             reference: is_string($reference) ? $reference : '',
-            state: PaymentState::from(is_string($state) ? $state : ''),
+            state: $paymentState,
             authorizedAmount: AmountShape::fromField($aggregate['authorizedAmount'] ?? null),
             capturedAmount: AmountShape::fromField($aggregate['capturedAmount'] ?? null),
             refundedAmount: AmountShape::fromField($aggregate['refundedAmount'] ?? null),

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use GuzzleHttp\Psr7\HttpFactory;
 use Nesthus\Vipps\Exceptions\VippsApiException;
+use Nesthus\Vipps\Exceptions\VippsConfigException;
 use Nesthus\Vipps\Http\ApiTransport;
 use Nesthus\Vipps\SystemInfo;
 use Nesthus\Vipps\Tests\Support\FakeHttpClient;
@@ -76,6 +77,22 @@ describe('request building', function () {
         $request = $this->client->lastRequest();
         expect($request->getHeaderLine('Content-Type'))->toBe('application/json')
             ->and((string) $request->getBody())->toBe('{"description":"Blåbærsyltetøy","url":"https://shop.example/return"}');
+    });
+
+    it('maps an unencodable payload to VippsConfigException without leaking it', function () {
+        try {
+            // Invalid UTF-8 — the classic way a caller-supplied description
+            // makes json_encode throw.
+            $this->transport->request('POST', '/x', ['description' => "\xB1\x31"]);
+            $this->fail('Expected VippsConfigException was not thrown.');
+        } catch (VippsConfigException $e) {
+            expect($e->getMessage())->toContain('JSON')
+                ->and($e->getMessage())->not->toContain("\xB1")
+                ->and($e->getPrevious())->toBeInstanceOf(JsonException::class);
+        }
+
+        // Thrown before anything went on the wire.
+        expect($this->client->requests)->toBe([]);
     });
 
     it('sends no body and no Content-Type when there is no JSON payload', function () {
@@ -200,6 +217,24 @@ describe('requestForm', function () {
             ->and($request->getHeaderLine('Ocp-Apim-Subscription-Key'))->toBe('sub-key')
             ->and($request->getHeaderLine('Merchant-Serial-Number'))->toBe('123456')
             ->and($request->getHeaderLine('Vipps-System-Name'))->toBe('My Webshop');
+    });
+
+    it('joins form pairs with a literal &, regardless of arg_separator.output', function () {
+        // http_build_query() with no separator argument honors the
+        // arg_separator.output ini setting — a host tuned for HTML output
+        // (';') would corrupt the OAuth body. Prove the separator is pinned.
+        $previous = ini_set('arg_separator.output', ';');
+
+        try {
+            $this->client->queueJson(200);
+            $this->transport->requestForm('POST', '/oauth/token', ['a' => '1', 'b' => '2']);
+        } finally {
+            if ($previous !== false) {
+                ini_set('arg_separator.output', $previous);
+            }
+        }
+
+        expect((string) $this->client->lastRequest()->getBody())->toBe('a=1&b=2');
     });
 
     it('lets extra per-call headers win, and maps errors the same way', function () {

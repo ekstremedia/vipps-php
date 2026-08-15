@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 use Nesthus\Vipps\Amount;
 use Nesthus\Vipps\Exceptions\VippsConfigException;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 use Nesthus\Vipps\Recurring\AgreementPatch;
 use Nesthus\Vipps\Recurring\ChargeTransactionType;
+use Nesthus\Vipps\Recurring\ChargeType;
 use Nesthus\Vipps\Recurring\Interval;
 use Nesthus\Vipps\Recurring\NewAgreement;
 use Nesthus\Vipps\Recurring\NewCharge;
@@ -43,6 +45,31 @@ it('rejects a due date string that is not an ISO date', function (string $due) {
     ))->toThrow(VippsConfigException::class);
 })->with(['01.10.2026', '2026-10-01T00:00:00Z', 'tomorrow']);
 
+it('rejects a RECURRING charge missing due or retryDays', function (DateTimeInterface|string|null $due, ?int $retryDays, ?ChargeType $type) {
+    expect(fn() => new NewCharge(
+        amount: Amount::fromMinor(1000),
+        transactionType: ChargeTransactionType::DirectCapture,
+        description: 'x',
+        due: $due,
+        retryDays: $retryDays,
+        type: $type,
+    ))->toThrow(VippsConfigException::class, 'A RECURRING charge requires both due and retryDays.');
+})->with([
+    'missing due' => [null, 5, ChargeType::Recurring],
+    'missing retryDays' => ['2026-10-01', null, ChargeType::Recurring],
+    'omitted type defaults to RECURRING' => [null, null, null],
+]);
+
+it('rejects an UNSCHEDULED charge carrying a due date', function () {
+    expect(fn() => new NewCharge(
+        amount: Amount::fromMinor(1000),
+        transactionType: ChargeTransactionType::DirectCapture,
+        description: 'x',
+        due: '2026-10-01',
+        type: ChargeType::Unscheduled,
+    ))->toThrow(VippsConfigException::class, 'An UNSCHEDULED charge must not set due');
+});
+
 it('rejects a phone number carrying a plus sign', function () {
     expect(fn() => new NewAgreement(
         pricing: Pricing::legacy(Amount::fromMinor(9900)),
@@ -59,10 +86,25 @@ it('rejects an empty AgreementPatch', function () {
         ->toThrow(VippsConfigException::class, 'AgreementPatch is empty — set at least one field to change.');
 });
 
-it('falls back to LEGACY for an unknown pricing type in a response', function () {
-    $pricing = Pricing::fromArray(['type' => 'BRAND_NEW', 'amount' => 100, 'currency' => 'EUR']);
+it('still reads a missing pricing type as LEGACY, the documented default', function () {
+    $pricing = Pricing::fromArray(['amount' => 100, 'currency' => 'EUR']);
 
     expect($pricing->type)->toBe(PricingType::Legacy)
         ->and($pricing->amount?->minorUnits)->toBe(100)
         ->and($pricing->amount?->currency)->toBe('EUR');
+});
+
+it('refuses an unknown pricing type instead of relabelling it LEGACY', function () {
+    expect(fn() => Pricing::fromArray(['type' => 'BRAND_NEW', 'amount' => 100, 'currency' => 'EUR']))
+        ->toThrow(VippsMalformedResponseException::class, 'BRAND_NEW');
+});
+
+it('maps FLEXIBLE pricing with the user-chosen maxAmount', function () {
+    $pricing = Pricing::fromArray(['type' => 'FLEXIBLE', 'maxAmount' => 45000, 'currency' => 'NOK']);
+
+    expect($pricing->type)->toBe(PricingType::Flexible)
+        ->and($pricing->maxAmount?->minorUnits)->toBe(45000)
+        ->and($pricing->maxAmount?->currency)->toBe('NOK')
+        ->and($pricing->amount)->toBeNull()
+        ->and($pricing->suggestedMaxAmount)->toBeNull();
 });

@@ -5,21 +5,55 @@ declare(strict_types=1);
 namespace Nesthus\Vipps\Login;
 
 use Nesthus\Vipps\Exceptions\VippsConfigException;
+use SensitiveParameter;
+use SensitiveParameterValue;
 
 /**
  * The token endpoint's answer to a successful code exchange. The id token is
  * kept as the raw compact JWT — see idTokenClaims() for why it can be read
  * without verifying its signature here, and only here.
+ *
+ * Both tokens are bearer secrets: whoever holds them IS the user. They are
+ * methods over SensitiveParameterValue, not public properties, because
+ * __debugInfo() alone only covers var_dump()/print_r() — var_export()
+ * ignores it — so the raw values must not sit in properties at all.
+ * #[SensitiveParameter] keeps them out of stack traces the same way.
  */
 final readonly class TokenSet
 {
+    private SensitiveParameterValue $accessToken;
+
+    private SensitiveParameterValue $idToken;
+
     public function __construct(
-        public string $accessToken,
-        public string $idToken,
+        #[SensitiveParameter]
+        string $accessToken,
+        #[SensitiveParameter]
+        string $idToken,
         public string $tokenType,
         public int $expiresIn,
         public string $scope,
-    ) {}
+    ) {
+        $this->accessToken = new SensitiveParameterValue($accessToken);
+        $this->idToken = new SensitiveParameterValue($idToken);
+    }
+
+    /**
+     * Same convention as VippsConfig: secrets show as ***redacted***,
+     * non-secrets stay readable so a dump is still useful for debugging.
+     *
+     * @return array<string, mixed>
+     */
+    public function __debugInfo(): array
+    {
+        return [
+            'accessToken' => '***redacted***',
+            'idToken' => '***redacted***',
+            'tokenType' => $this->tokenType,
+            'expiresIn' => $this->expiresIn,
+            'scope' => $this->scope,
+        ];
+    }
 
     /**
      * Tolerates missing keys and ignores extras — Vipps adds fields without
@@ -41,6 +75,22 @@ final readonly class TokenSet
         );
     }
 
+    public function accessToken(): string
+    {
+        /** @var string $token */
+        $token = $this->accessToken->getValue();
+
+        return $token;
+    }
+
+    public function idToken(): string
+    {
+        /** @var string $token */
+        $token = $this->idToken->getValue();
+
+        return $token;
+    }
+
     /**
      * The id token's claims, base64url-decoded WITHOUT verifying the JWT
      * signature.
@@ -58,7 +108,7 @@ final readonly class TokenSet
      */
     public function idTokenClaims(): array
     {
-        $segments = explode('.', $this->idToken);
+        $segments = explode('.', $this->idToken());
         if (count($segments) < 2) {
             throw new VippsConfigException('idToken is not a compact JWT: expected dot-separated segments.');
         }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Nesthus\Vipps\Amount;
 use Nesthus\Vipps\Exceptions\VippsApiException;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 use Nesthus\Vipps\Recurring\AgreementPatch;
 use Nesthus\Vipps\Recurring\AgreementStatus;
 use Nesthus\Vipps\Recurring\ChargeTransactionType;
@@ -35,6 +36,7 @@ it('creates an agreement with the full v3 payload under an idempotency key', fun
     $h->http->queueJson(201, [
         'agreementId' => 'agr_5kSeqz',
         'vippsConfirmationUrl' => 'https://apitest.vipps.no/deeplink/vippsgateway?token=abc',
+        'chargeId' => 'chr_initial', // set because the agreement carries an initialCharge
     ]);
 
     $created = $h->api->createAgreement(new NewAgreement(
@@ -78,14 +80,15 @@ it('creates an agreement with the full v3 payload under an idempotency key', fun
             'externalId' => 'sub-42',
         ])
         ->and($created->agreementId)->toBe('agr_5kSeqz')
-        ->and($created->vippsConfirmationUrl)->toBe('https://apitest.vipps.no/deeplink/vippsgateway?token=abc');
+        ->and($created->vippsConfirmationUrl)->toBe('https://apitest.vipps.no/deeplink/vippsgateway?token=abc')
+        ->and($created->chargeId)->toBe('chr_initial');
 });
 
 it('omits optional agreement fields entirely and supports VARIABLE pricing', function () {
     $h = new RecurringHarness();
     $h->http->queueJson(201, ['agreementId' => 'agr_1', 'vippsConfirmationUrl' => 'https://example.test/confirm']);
 
-    $h->api->createAgreement(new NewAgreement(
+    $created = $h->api->createAgreement(new NewAgreement(
         pricing: Pricing::variable(Amount::fromMinor(30000, 'DKK')),
         interval: Interval::weeks(2),
         productName: 'Flexi plan',
@@ -99,7 +102,8 @@ it('omits optional agreement fields entirely and supports VARIABLE pricing', fun
         'merchantRedirectUrl' => 'https://example.com/return',
         'merchantAgreementUrl' => 'https://example.com/manage',
         'productName' => 'Flexi plan',
-    ]);
+    ])
+        ->and($created->chargeId)->toBeNull(); // no initialCharge, so Vipps sends no chargeId
 });
 
 it('lists agreements as a plain GET with no idempotency key and no body', function () {
@@ -131,6 +135,21 @@ it('filters the agreement list by status through the query string', function () 
         ->and($agreements[0]->status)->toBe(AgreementStatus::Stopped);
 });
 
+it('passes pageNumber and pageSize through the agreement list query', function () {
+    $h = new RecurringHarness();
+    $h->http->queueJson(200, [recurringAgreementBody('agr_1')]);
+
+    $h->api->listAgreements(AgreementStatus::Active, pageNumber: 2, pageSize: 50);
+
+    expect($h->http->lastRequest()->getUri()->getQuery())->toBe('status=ACTIVE&pageNumber=2&pageSize=50');
+
+    $h->http->queueJson(200, [recurringAgreementBody('agr_2')]);
+
+    $h->api->listAgreements(pageSize: 25);
+
+    expect($h->http->lastRequest()->getUri()->getQuery())->toBe('pageSize=25');
+});
+
 it('maps an agreement response, tolerating unknown keys and missing optionals', function () {
     $h = new RecurringHarness();
     $h->http->queueJson(200, [
@@ -140,7 +159,7 @@ it('maps an agreement response, tolerating unknown keys and missing optionals', 
             'type' => 'VARIABLE',
             'suggestedMaxAmount' => 30000,
             'currency' => 'NOK',
-            'maxAmount' => 45000, // unknown pricing key
+            'maxAmount' => 45000, // the ceiling the user actually approved
         ],
         'interval' => ['unit' => 'YEAR', 'count' => 1],
         'productName' => 'Yearbook',
@@ -161,6 +180,7 @@ it('maps an agreement response, tolerating unknown keys and missing optionals', 
         ->and($agreement->status)->toBe(AgreementStatus::Expired)
         ->and($agreement->pricing->type)->toBe(PricingType::Variable)
         ->and($agreement->pricing->suggestedMaxAmount?->minorUnits)->toBe(30000)
+        ->and($agreement->pricing->maxAmount?->minorUnits)->toBe(45000)
         ->and($agreement->pricing->amount)->toBeNull()
         ->and($agreement->interval->unit)->toBe(IntervalUnit::Year)
         ->and($agreement->interval->count)->toBe(1)
@@ -169,6 +189,24 @@ it('maps an agreement response, tolerating unknown keys and missing optionals', 
         ->and($agreement->externalId)->toBeNull()
         ->and($agreement->start?->format('Y-m-d H:i'))->toBe('2026-02-01 09:30')
         ->and($agreement->stop)->toBeNull();
+});
+
+it('throws on an unknown agreement status instead of a bare ValueError', function () {
+    $h = new RecurringHarness();
+    $h->http->queueJson(200, recurringAgreementBody('agr_1', 'BRAND_NEW_STATUS'));
+
+    expect(fn() => $h->api->getAgreement('agr_1'))
+        ->toThrow(VippsMalformedResponseException::class, 'BRAND_NEW_STATUS');
+});
+
+it('throws when an agreement response is missing its status', function () {
+    $h = new RecurringHarness();
+    $body = recurringAgreementBody('agr_1');
+    unset($body['status']);
+    $h->http->queueJson(200, $body);
+
+    expect(fn() => $h->api->getAgreement('agr_1'))
+        ->toThrow(VippsMalformedResponseException::class, 'status');
 });
 
 it('stops an agreement with a STOPPED patch under an idempotency key', function () {

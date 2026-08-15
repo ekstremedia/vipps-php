@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Nesthus\Vipps\Http;
 
+use JsonException;
 use Nesthus\Vipps\Exceptions\VippsApiException;
+use Nesthus\Vipps\Exceptions\VippsConfigException;
 use Nesthus\Vipps\VippsConfig;
 use Psr\Http\Client\ClientExceptionInterface;
 use Psr\Http\Client\ClientInterface;
@@ -44,7 +46,7 @@ final readonly class ApiTransport implements Transport
     ): ApiResponse {
         $request = $this->requestFactory->createRequest($method, $this->config->baseUrl() . $path)
             ->withHeader('Accept', 'application/json')
-            ->withHeader('Ocp-Apim-Subscription-Key', $this->config->subscriptionKey)
+            ->withHeader('Ocp-Apim-Subscription-Key', $this->config->subscriptionKey())
             ->withHeader('Merchant-Serial-Number', $this->config->merchantSerialNumber);
 
         foreach ($this->config->system->headers() as $name => $value) {
@@ -95,9 +97,12 @@ final readonly class ApiTransport implements Transport
         $request = $this->requestFactory->createRequest($method, $this->config->baseUrl() . $path)
             ->withHeader('Accept', 'application/json')
             ->withHeader('Content-Type', 'application/x-www-form-urlencoded')
-            ->withHeader('Ocp-Apim-Subscription-Key', $this->config->subscriptionKey)
+            ->withHeader('Ocp-Apim-Subscription-Key', $this->config->subscriptionKey())
             ->withHeader('Merchant-Serial-Number', $this->config->merchantSerialNumber)
-            ->withBody($this->streamFactory->createStream(http_build_query($form)));
+            // The explicit '&' matters: without it http_build_query() honors
+            // the arg_separator.output ini setting, and a host tuned for HTML
+            // output (';') would silently corrupt the OAuth form body.
+            ->withBody($this->streamFactory->createStream(http_build_query($form, '', '&')));
 
         foreach ($this->config->system->headers() as $name => $value) {
             $request = $request->withHeader($name, $value);
@@ -128,7 +133,20 @@ final readonly class ApiTransport implements Transport
      */
     private function encode(array $json): string
     {
-        return json_encode($json, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        try {
+            return json_encode($json, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (JsonException $e) {
+            // Caller-supplied data that PHP cannot represent as JSON (most
+            // commonly invalid UTF-8 in a description) is an integrator bug,
+            // not a Vipps error — so it maps to VippsConfigException, keeping
+            // the marker-interface promise instead of leaking a bare
+            // JsonException. The payload itself deliberately stays out of the
+            // message: it can carry PII or credentials.
+            throw new VippsConfigException(
+                "Request payload cannot be encoded as JSON ({$e->getMessage()}).",
+                previous: $e,
+            );
+        }
     }
 
     /**

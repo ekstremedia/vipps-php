@@ -5,13 +5,15 @@ declare(strict_types=1);
 namespace Nesthus\Vipps\Recurring;
 
 use DateTimeImmutable;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 
 /**
  * One agreement as Vipps reports it. Mapping is tolerant on purpose — Vipps
  * adds response fields without notice, so unknown keys are ignored and
- * missing optionals map to null. The status is the exception: an
- * unrecognisable status on a payment mandate should fail loudly rather than
- * be guessed at, so AgreementStatus::from() is used unshielded.
+ * missing optionals map to null. The status is the exception: an absent or
+ * unrecognisable status on a payment mandate must fail loudly rather than
+ * be guessed at — as VippsMalformedResponseException, so it still lands in
+ * a `catch (VippsException)` boundary instead of escaping as a ValueError.
  */
 final readonly class Agreement
 {
@@ -32,9 +34,13 @@ final readonly class Agreement
      */
     public static function fromArray(array $data): self
     {
+        $status = ResponseField::stringOrNull($data, 'status')
+            ?? throw VippsMalformedResponseException::missingField('recurring agreement', 'status');
+
         return new self(
             id: ResponseField::stringOrNull($data, 'id') ?? '',
-            status: AgreementStatus::from(ResponseField::stringOrNull($data, 'status') ?? ''),
+            status: AgreementStatus::tryFrom($status)
+                ?? throw VippsMalformedResponseException::unexpectedValue('recurring agreement', 'status', $status),
             pricing: Pricing::fromArray(ResponseField::arrayAt($data, 'pricing')),
             interval: Interval::fromArray(ResponseField::arrayAt($data, 'interval')),
             productName: ResponseField::stringOrNull($data, 'productName') ?? '',

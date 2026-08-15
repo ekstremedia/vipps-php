@@ -10,12 +10,12 @@ use Nesthus\Vipps\Exceptions\VippsConfigException;
 /**
  * Draft for POST /epayment/v1/payments.
  *
- * The reference is validated at construction because it is the one field a
- * merchant must get right BEFORE any request goes out: it becomes the
- * payment's permanent identity in every later call (get, capture, cancel,
- * refund), and Vipps rejects anything outside 8–64 chars of [a-zA-Z0-9-].
- * Better a VippsConfigException in the checkout code path than a 400 in
- * production logs.
+ * The reference is validated at construction because a merchant must get it
+ * right BEFORE any request goes out: it becomes the payment's permanent
+ * identity in every later call (get, capture, cancel, refund), and Vipps
+ * rejects anything outside 8–64 chars of [a-zA-Z0-9-]. Better a
+ * VippsConfigException in the checkout code path than a 400 in production
+ * logs.
  */
 final readonly class CreatePayment
 {
@@ -31,6 +31,14 @@ final readonly class CreatePayment
             throw new VippsConfigException(
                 "Payment reference must be 8-64 characters of [a-zA-Z0-9-], got \"{$reference}\".",
             );
+        }
+
+        // Same wire concept as Recurring's NewAgreement.phoneNumber, so the
+        // same rule: an MSISDN with country code and no plus sign. It only
+        // targets/prefills the Vipps app, so a wrong number is confusing
+        // rather than fatal — reject the classic +47… mistake before it ships.
+        if ($customerPhoneNumber !== null && preg_match('/^\d{8,15}$/', $customerPhoneNumber) !== 1) {
+            throw new VippsConfigException('customerPhoneNumber must be an MSISDN without the plus sign, e.g. "4791234567".');
         }
     }
 

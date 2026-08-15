@@ -37,13 +37,12 @@ use Psr\Clock\ClockInterface;
  *     the computed signature never appear in a ValidationResult, so the
  *     merchant can log reasons verbatim without leaking signing material.
  *
- * OPEN QUESTION — key encoding. This HMACs with the secret's raw bytes
- * as-is. Azure APIM's own samples typically base64-decode the signing key
- * first; if the secret Vipps returns at registration is itself base64 (common
- * for APIM-issued keys), a decode step would be needed here. Deliberately
- * kept as raw-string until proven otherwise — verify against the first real
- * sandbox delivery, where getting it wrong shows up as `signature_mismatch`
- * on an otherwise well-formed request.
+ * Key encoding — VERIFIED (Vipps' official request-authentication sample,
+ * checked 2026-08-15): the HMAC key is the secret's raw UTF-8 bytes. Their
+ * C# reference does `new HMACSHA256(Encoding.UTF8.GetBytes(secret))`, which
+ * is exactly what hash_hmac() does with the string passed below — no base64
+ * decode of the secret, even though generic Azure APIM samples typically
+ * decode theirs. Do not "fix" this toward the APIM convention.
  */
 final readonly class SignatureValidator
 {

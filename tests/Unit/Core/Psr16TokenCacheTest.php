@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Nesthus\Vipps\Auth\AccessToken;
 use Nesthus\Vipps\Auth\Psr16TokenCache;
+use Nesthus\Vipps\Tests\Support\FrozenClock;
 use Psr\SimpleCache\CacheInterface;
 
 beforeEach(function () {
@@ -78,42 +79,131 @@ beforeEach(function () {
         }
     };
 
-    $this->cache = new Psr16TokenCache($this->store);
+    $this->clock = FrozenClock::at('2026-08-15 12:00:00');
+    $this->cache = new Psr16TokenCache($this->store, clock: $this->clock);
 });
 
 it('round-trips a token as a plain array under the prefixed key', function () {
-    $expiresAt = (new DateTimeImmutable())->modify('+3600 seconds');
+    $expiresAt = $this->clock->now()->modify('+3600 seconds');
 
     $this->cache->put('key', new AccessToken('t-1', $expiresAt));
 
     // Stored as a plain array, never a serialized object — a shared cache
     // must survive this class changing shape between deploys.
-    expect($this->store->items)->toHaveKey('nesthus-vipps:token:key')
-        ->and($this->store->items['nesthus-vipps:token:key'])->toBe([
+    expect($this->store->items)->toHaveKey('nesthus-vipps.token.key')
+        ->and($this->store->items['nesthus-vipps.token.key'])->toBe([
             'value' => 't-1',
             'expires_at' => $expiresAt->getTimestamp(),
         ]);
 
     $roundTripped = $this->cache->get('key');
     expect($roundTripped)->toBeInstanceOf(AccessToken::class)
-        ->and($roundTripped->value)->toBe('t-1')
+        ->and($roundTripped->value())->toBe('t-1')
         ->and($roundTripped->expiresAt->getTimestamp())->toBe($expiresAt->getTimestamp());
 });
 
-it('gives the entry a TTL matching the token lifetime', function () {
-    $this->cache->put('key', new AccessToken('t-1', (new DateTimeImmutable())->modify('+100 seconds')));
+it('never emits a PSR-16 reserved key character, even with the default prefix', function () {
+    // The old default prefix was 'nesthus-vipps:token:' — and ':' is on
+    // PSR-16's reserved list `{}()/\@:`, so strict stores (e.g. Symfony's
+    // Psr16Cache) threw on EVERY operation. This stub enforces the spec the
+    // way those stores do; the suffix mirrors what TokenProvider appends
+    // (a sha256 hex digest, always legal).
+    $strictStore = new class implements CacheInterface {
+        /** @var array<string, mixed> */
+        public array $items = [];
 
-    $ttl = $this->store->ttls['nesthus-vipps:token:key'];
-    expect($ttl)->toBeInt()
-        ->and($ttl)->toBeGreaterThan(97) // allow for time() ticking mid-test
-        ->and($ttl)->toBeLessThanOrEqual(100);
+        public function get(string $key, mixed $default = null): mixed
+        {
+            $this->assertLegal($key);
+
+            return $this->items[$key] ?? $default;
+        }
+
+        public function set(string $key, mixed $value, DateInterval|int|null $ttl = null): bool
+        {
+            $this->assertLegal($key);
+            $this->items[$key] = $value;
+
+            return true;
+        }
+
+        public function delete(string $key): bool
+        {
+            $this->assertLegal($key);
+            unset($this->items[$key]);
+
+            return true;
+        }
+
+        public function clear(): bool
+        {
+            $this->items = [];
+
+            return true;
+        }
+
+        public function getMultiple(iterable $keys, mixed $default = null): iterable
+        {
+            return [];
+        }
+
+        public function setMultiple(iterable $values, DateInterval|int|null $ttl = null): bool
+        {
+            return true;
+        }
+
+        public function deleteMultiple(iterable $keys): bool
+        {
+            return true;
+        }
+
+        public function has(string $key): bool
+        {
+            $this->assertLegal($key);
+
+            return array_key_exists($key, $this->items);
+        }
+
+        private function assertLegal(string $key): void
+        {
+            if (strpbrk($key, '{}()/\\@:') !== false) {
+                throw new class ("PSR-16 reserved character in cache key \"{$key}\"") extends InvalidArgumentException implements Psr\SimpleCache\InvalidArgumentException {};
+            }
+        }
+    };
+
+    $cache = new Psr16TokenCache($strictStore, clock: $this->clock);
+    $key = hash('sha256', 'anything');
+
+    $cache->put($key, new AccessToken('t-1', $this->clock->now()->modify('+1 hour')));
+
+    expect($cache->get($key))->toBeInstanceOf(AccessToken::class);
+
+    $cache->forget($key);
+
+    expect($cache->get($key))->toBeNull();
+});
+
+it('gives the entry a TTL matching the token lifetime exactly', function () {
+    // Exact, not a range: put() reads the injected clock, never time().
+    $this->cache->put('key', new AccessToken('t-1', $this->clock->now()->modify('+100 seconds')));
+
+    expect($this->store->ttls['nesthus-vipps.token.key'])->toBe(100);
 });
 
 it('never stores an already-expired token — the TTL would be negative', function () {
-    $this->cache->put('past', new AccessToken('t-1', (new DateTimeImmutable())->modify('-10 seconds')));
-    $this->cache->put('now', new AccessToken('t-2', new DateTimeImmutable()));
+    $this->cache->put('past', new AccessToken('t-1', $this->clock->now()->modify('-10 seconds')));
+    $this->cache->put('now', new AccessToken('t-2', $this->clock->now()));
 
     expect($this->store->items)->toBe([]);
+});
+
+it('measures the TTL against the injected clock, not the wall clock', function () {
+    $this->clock->advance(500);
+
+    $this->cache->put('key', new AccessToken('t-1', $this->clock->now()->modify('+100 seconds')));
+
+    expect($this->store->ttls['nesthus-vipps.token.key'])->toBe(100);
 });
 
 it('misses on an unknown key', function () {
@@ -121,7 +211,7 @@ it('misses on an unknown key', function () {
 });
 
 it('returns null for a malformed cache payload instead of exploding', function (mixed $payload) {
-    $this->store->items['nesthus-vipps:token:key'] = $payload;
+    $this->store->items['nesthus-vipps.token.key'] = $payload;
 
     expect($this->cache->get('key'))->toBeNull();
 })->with([
@@ -135,7 +225,7 @@ it('returns null for a malformed cache payload instead of exploding', function (
 ]);
 
 it('forgets by deleting the prefixed key', function () {
-    $this->cache->put('key', new AccessToken('t-1', (new DateTimeImmutable())->modify('+1 hour')));
+    $this->cache->put('key', new AccessToken('t-1', $this->clock->now()->modify('+1 hour')));
 
     $this->cache->forget('key');
 
@@ -144,10 +234,10 @@ it('forgets by deleting the prefixed key', function () {
 });
 
 it('honors a custom prefix', function () {
-    $cache = new Psr16TokenCache($this->store, prefix: 'other:');
+    $cache = new Psr16TokenCache($this->store, prefix: 'other.', clock: $this->clock);
 
-    $cache->put('key', new AccessToken('t-1', (new DateTimeImmutable())->modify('+1 hour')));
+    $cache->put('key', new AccessToken('t-1', $this->clock->now()->modify('+1 hour')));
 
-    expect($this->store->items)->toHaveKey('other:key')
+    expect($this->store->items)->toHaveKey('other.key')
         ->and($cache->get('key'))->toBeInstanceOf(AccessToken::class);
 });

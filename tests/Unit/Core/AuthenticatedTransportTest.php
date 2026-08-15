@@ -109,6 +109,44 @@ it('propagates a second consecutive 401 instead of retrying forever', function (
     expect(($this->apiCalls)())->toHaveCount(2);
 });
 
+it('propagates a 401 from the token endpoint itself — no doomed second fetch', function () {
+    // Bad keys: /accesstoken/get answers 401 before any API call happens.
+    // Retrying would refetch with the very same keys, so exactly ONE token
+    // request may go out and the original request must never be sent.
+    $this->client->queueJson(401, ['title' => 'Unauthorized']);
+
+    try {
+        $this->transport->request('GET', '/x');
+        $this->fail('Expected VippsApiException was not thrown.');
+    } catch (VippsApiException $e) {
+        expect($e->status)->toBe(401)
+            ->and($e->getMessage())->toContain('/accesstoken/get');
+    }
+
+    expect(($this->tokenFetches)())->toHaveCount(1)
+        ->and(($this->apiCalls)())->toHaveCount(0);
+});
+
+it('propagates a 401 from the token refetch inside the retry — no third attempt', function () {
+    // The original request 401s (token revoked), and the refetch then hits
+    // rotated-away keys: that second token 401 must surface as-is.
+    $this->client
+        ->queueJson(200, ['access_token' => 'token-1', 'expires_in' => 3600])
+        ->queueJson(401, ['title' => 'Unauthorized'])
+        ->queueJson(401, ['title' => 'Keys revoked']);
+
+    try {
+        $this->transport->request('GET', '/x');
+        $this->fail('Expected VippsApiException was not thrown.');
+    } catch (VippsApiException $e) {
+        expect($e->status)->toBe(401)
+            ->and($e->getMessage())->toContain('/accesstoken/get');
+    }
+
+    expect(($this->tokenFetches)())->toHaveCount(2)
+        ->and(($this->apiCalls)())->toHaveCount(1);
+});
+
 it('propagates non-401 errors without a retry', function () {
     $this->client
         ->queueJson(200, ['access_token' => 'token-1', 'expires_in' => 3600])

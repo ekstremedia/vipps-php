@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nesthus\Vipps\Recurring;
 
 use Nesthus\Vipps\Amount;
+use Nesthus\Vipps\Exceptions\VippsMalformedResponseException;
 use Nesthus\Vipps\Http\Transport;
 
 /**
@@ -50,12 +51,26 @@ final readonly class RecurringApi
 
     /**
      * Vipps defaults to ACTIVE agreements when no status filter is given.
+     * Pagination is opt-in: leave pageNumber/pageSize null and Vipps returns
+     * everything in one response.
      *
      * @return list<Agreement>
      */
-    public function listAgreements(?AgreementStatus $status = null): array
-    {
-        $query = $status !== null ? '?status=' . $status->value : '';
+    public function listAgreements(
+        ?AgreementStatus $status = null,
+        ?int $pageNumber = null,
+        ?int $pageSize = null,
+    ): array {
+        $params = array_filter(
+            [
+                'status' => $status?->value,
+                'pageNumber' => $pageNumber,
+                'pageSize' => $pageSize,
+            ],
+            static fn(int|string|null $value): bool => $value !== null,
+        );
+
+        $query = $params === [] ? '' : '?' . http_build_query($params);
 
         $response = $this->transport->request('GET', self::BASE . '/agreements' . $query);
 
@@ -118,19 +133,28 @@ final readonly class RecurringApi
             idempotencyKey: $idempotencyKey,
         );
 
-        $chargeId = $response->data['chargeId'] ?? null;
-
-        return is_string($chargeId) ? $chargeId : '';
+        return ResponseField::stringOrNull($response->data, 'chargeId')
+            ?? throw VippsMalformedResponseException::missingField('recurring charge creation', 'chargeId');
     }
 
     /**
-     * @return list<Charge>
+     * v3 pages this endpoint through headers, not the body: pass the
+     * previous page's ChargePage::$continuationToken to get the next one
+     * (it travels as the Continuation-Token request header), and keep going
+     * until the returned token is null.
      */
-    public function listCharges(string $agreementId, ?ChargeStatus $status = null): array
-    {
+    public function listCharges(
+        string $agreementId,
+        ?ChargeStatus $status = null,
+        ?string $continuationToken = null,
+    ): ChargePage {
         $query = $status !== null ? '?status=' . $status->value : '';
 
-        $response = $this->transport->request('GET', $this->agreementPath($agreementId) . '/charges' . $query);
+        $response = $this->transport->request(
+            'GET',
+            $this->agreementPath($agreementId) . '/charges' . $query,
+            headers: $continuationToken !== null ? ['Continuation-Token' => $continuationToken] : [],
+        );
 
         $charges = [];
         foreach ($response->data as $item) {
@@ -139,7 +163,10 @@ final readonly class RecurringApi
             }
         }
 
-        return $charges;
+        // An empty token header means the same as an absent one: last page.
+        $nextToken = $response->header('Continuation-Token');
+
+        return new ChargePage($charges, $nextToken === '' ? null : $nextToken);
     }
 
     public function getCharge(string $agreementId, string $chargeId): Charge
@@ -176,28 +203,20 @@ final readonly class RecurringApi
 
     /**
      * Captures a RESERVED charge (RESERVE_CAPTURE) once the goods have
-     * shipped. Null $amount captures the full reservation; a smaller one
-     * captures partially and releases the remainder.
+     * shipped. v3 requires an explicit amount even for a full capture —
+     * pass the charge's own amount to take the whole reservation; a smaller
+     * one captures partially and releases the remainder.
      */
     public function captureCharge(
         string $agreementId,
         string $chargeId,
+        Amount $amount,
         string $idempotencyKey,
-        ?Amount $amount = null,
-        ?string $description = null,
     ): void {
-        $payload = [];
-        if ($amount !== null) {
-            $payload['amount'] = $amount->minorUnits;
-        }
-        if ($description !== null) {
-            $payload['description'] = $description;
-        }
-
         $this->transport->request(
             'POST',
             $this->chargePath($agreementId, $chargeId) . '/capture',
-            $payload === [] ? null : $payload,
+            ['amount' => $amount->minorUnits],
             idempotencyKey: $idempotencyKey,
         );
     }
